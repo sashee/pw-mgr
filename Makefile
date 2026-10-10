@@ -1,20 +1,33 @@
 SHELL := bash
 
-# Every target runs inside the pinned nix shell (shell.nix); --pure keeps host libraries out of
-# Chromium's way. Already inside `nix-shell`? Then the commands run directly.
+# Two kinds of targets:
+# - hermetic ones (check, package) go through nix-build (nix/default.nix), in the Nix sandbox;
+# - the development loop (test, e2e, run, …) runs inside the pinned nix shell (shell.nix). --pure keeps host
+#   libraries out of Chromium's way. Already inside `nix-shell`? Then the commands run directly.
 ifdef IN_NIX_SHELL
 RUN := bash -c
 else
 RUN := nix-shell --pure shell.nix --run
 endif
+NIX_BUILD := nix-build --max-jobs auto
 
 BACKEND := backend/target/debug/backend
 PORT ?= 8080
 
-.PHONY: all test test-backend test-web lint fmt build e2e run iroh user setup-token clean
+.PHONY: all check package test test-backend test-web lint fmt build e2e run iroh user setup-token clean
 
-# Everything that must pass, fastest first.
-all: lint test e2e
+# Everything, hermetic: both packages, lint, the Rust suite, the frontend's unit tests and the browser tests,
+# in the Nix sandbox. This is what CI runs.
+all: check
+
+check:
+	$(NIX_BUILD) nix --no-out-link
+
+# Just the packages (building the backend still runs the Rust suite). result/ and result-2/ link to them.
+package:
+	$(NIX_BUILD) nix -A backend -A web
+
+# ---------------------------------------------------------------- development loop (incremental, dev shell)
 
 test: test-backend test-web
 

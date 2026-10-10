@@ -8,11 +8,21 @@ A web-based password manager with end-to-end encryption.
 
 ## Development
 
-Everything runs in the pinned Nix shell (`shell.nix`, nixpkgs pinned in `nix/pkgs.nix`); the Makefile enters it
-by itself.
+Everything is built with Nix (nixpkgs pinned in `nix/pkgs.nix`, no flake):
 
 ```sh
-make all                 # lint, unit tests (backend + web), end-to-end test in Chromium
+make check               # both packages and every check in the Nix sandbox (what CI runs)
+make package             # result/ = the backend, result-2/ = the frontend's static files
+```
+
+`nix-build nix -A checks.<name>` runs one check: `lint`, `web-unit`, `e2e-flows`, `e2e-settings`,
+`e2e-import-kdbx`. The Rust suite runs as part of building the backend.
+
+For development, the Makefile enters the pinned dev shell (`shell.nix`) by itself:
+
+```sh
+make test                # backend + frontend unit tests, incremental
+make e2e                 # the browser tests against a debug build
 make run                 # backend on ./data/backend.sock, reachable at http://localhost:8080 via socat
 make user NAME=alice     # create a user; open http://localhost:8080/#setup=<token>
 make setup-token NAME=alice   # a new setup link for an existing user (e.g. another device)
