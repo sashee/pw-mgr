@@ -1,13 +1,13 @@
 """End-to-end: the real backend behind socat (as the iroh shim reaches it), Chromium with a virtual
-authenticator that supports PRF, and the frontend's core path (web SPEC §7):
+authenticator that supports PRF, and the frontend's core path (e2ee-store/sdk/SPEC.md §6, web SPEC §7):
 
-  setup link → passkey → recovery key → vault → entries, copy buttons → lock → unlock
+  setup link → passkey → recovery key → vault → entries, copy buttons, deleting → lock → unlock
   second device on another host: setup link → recovery key → its own passkey → same vault
   concurrent edits on both devices keep both changes
 
 Also checks what the server sees: no PRF output in any request, and no plaintext in any stored blob.
 
-    BACKEND_BIN=backend/target/debug/backend python web/test/e2e/test_flows.py
+    BACKEND_BIN=data/backend/bin/backend PYTHONPATH=data/sdk/share/e2ee-store/testing python web/test/e2e/test_flows.py    # after `make deps`
 """
 
 import re
@@ -51,12 +51,18 @@ def run(browser, backend: Backend, port: int) -> None:
     assert page.locator("#detail a").count() == 1, "only the http(s) URL is a link"
     print("  ok    entries are saved and the copy buttons copy")
 
+    add_entry(page, "Throwaway")
+    page.locator("li[data-entry='Throwaway'] button.entry").click()
+    page.locator("#detail button", has_text="Delete").click()  # the harness accepts the confirmation
+    expect(page.locator("li[data-entry='Throwaway']")).to_have_count(0)
+
     # --- lock and unlock with the passkey
     page.click("#lock")
     page.wait_for_selector("#unlock")
     unlock(page)
     expect(page.locator("li[data-entry='GitHub']")).to_be_visible()
-    print("  ok    locked, then unlocked with the passkey")
+    expect(page.locator("li[data-entry='Throwaway']")).to_have_count(0)
+    print("  ok    a deleted entry stays deleted; locked, then unlocked with the passkey")
 
     # --- second device on another host: setup link + recovery key, then its own passkey
     phone_token = backend.setup_token("setup-token", "create", "alice")

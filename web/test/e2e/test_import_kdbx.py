@@ -8,7 +8,7 @@
 
 Everything here is deleted together with the import module (web SPEC §8.5).
 
-    BACKEND_BIN=backend/target/debug/backend python web/test/e2e/test_import_kdbx.py
+    BACKEND_BIN=data/backend/bin/backend PYTHONPATH=data/sdk/share/e2ee-store/testing python web/test/e2e/test_import_kdbx.py    # after `make deps`
 """
 
 import base64

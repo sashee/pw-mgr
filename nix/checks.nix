@@ -1,38 +1,33 @@
-# The checks besides the Rust suite (which runs in the backend package's doCheck):
+# The checks (the backend's Rust suite and lint are e2ee-store's):
 #
-# - lint: rustfmt and clippy (warnings are errors), with the same toolchain the package is built with, so a
-#   new lint can only appear with a reviewed bump of nix/pkgs.nix.
 # - web-unit: the frontend's Node unit tests, including the KeePass import against pykeepass's sample
-#   databases (read from the store).
-# - e2e-flows, e2e-settings, e2e-import-kdbx: the browser tests. The backend package behind socat (as the
-#   iroh shim reaches it), Chromium with a PRF-capable virtual authenticator. Sandboxed builds, not VMs: none of
-#   them needs the network, and Chromium resolves *.localhost to loopback by itself.
+#   databases (read from the store), against the web package, so with the SDK it ships.
+# - e2e-flows, e2e-settings, e2e-safety, e2e-locking, e2e-import-kdbx: the browser tests, on e2ee-store's harness. The backend package
+#   behind socat (as the iroh shim reaches it) serves the web package; Chromium with a PRF-capable virtual
+#   authenticator. Sandboxed builds, not VMs: none of them needs the network, and Chromium resolves *.localhost
+#   to loopback by itself.
 # - vm: the NixOS module in a VM (./tests/lib.nix), on a minimal machine. A host repository runs the same test
 #   against its own configuration.
 {
   pkgs,
   backend,
+  sdk,
+  web,
 }:
 let
   inherit (pkgs) lib;
   fileset = lib.fileset;
   pykeepassSamples = "${pkgs.python3Packages.pykeepass.src}/tests";
+  static = "${web}/share/pw-mgr/web";
 
-  unitSrc = fileset.toSource {
-    root = ../web;
-    fileset = fileset.unions [
-      ../web/public
-      ../web/test/unit
-    ];
+  unitTests = fileset.toSource {
+    root = ../web/test/unit;
+    fileset = ../web/test/unit;
   };
 
-  # The e2e harness finds web/public relative to itself, so keep the repository layout.
-  e2eSrc = fileset.toSource {
-    root = ../.;
-    fileset = fileset.unions [
-      ../web/public
-      ../web/test/e2e
-    ];
+  e2eTests = fileset.toSource {
+    root = ../web/test/e2e;
+    fileset = ../web/test/e2e;
   };
 
   python = pkgs.python3.withPackages (p: [
@@ -50,6 +45,8 @@ let
           pkgs.socat
         ];
         BACKEND_BIN = lib.getExe backend;
+        STATIC_DIR = static;
+        PYTHONPATH = "${sdk}/share/e2ee-store/testing";
         PYKEEPASS_TESTS = pykeepassSamples;
         PYTHONDONTWRITEBYTECODE = "1";
         # Chromium looks for fonts even headless; without a config it warns on every start.
@@ -57,27 +54,12 @@ let
       }
       ''
         export HOME="$TMPDIR"
-        python ${e2eSrc}/web/test/e2e/${script}
+        python ${e2eTests}/${script}
         touch "$out"
       '';
 in
 {
-  lint = backend.overrideAttrs (old: {
-    pname = "backend-lint";
-    nativeBuildInputs = old.nativeBuildInputs ++ [
-      pkgs.clippy
-      pkgs.rustfmt
-    ];
-    buildPhase = ''
-      runHook preBuild
-      cargo fmt --check
-      cargo clippy --offline --all-targets -- -D warnings
-      runHook postBuild
-    '';
-    doCheck = false;
-    installPhase = "touch $out";
-  });
-
+  # The tests find the app relative to themselves (../../public), so rebuild that layout.
   web-unit =
     pkgs.runCommand "pw-mgr-web-unit"
       {
@@ -85,13 +67,18 @@ in
         PYKEEPASS_TESTS = pykeepassSamples;
       }
       ''
-        cd ${unitSrc}
+        mkdir -p web/test
+        cp -r ${static} web/public
+        cp -r ${unitTests} web/test/unit
+        cd web
         node --test "test/unit/**/*.test.js"
         touch "$out"
       '';
 
   e2e-flows = browserTest "e2e-flows" "test_flows.py";
   e2e-settings = browserTest "e2e-settings" "test_settings.py";
+  e2e-safety = browserTest "e2e-safety" "test_safety.py";
+  e2e-locking = browserTest "e2e-locking" "test_locking.py";
   e2e-import-kdbx = browserTest "e2e-import-kdbx" "test_import_kdbx.py";
 
   vm = import ./tests/lib.nix {

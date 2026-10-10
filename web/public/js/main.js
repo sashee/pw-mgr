@@ -1,15 +1,15 @@
 // Startup and the screen state machine. The only long-lived state is the unlocked session; locking reloads
-// the page so the keys and plaintext leave memory (SPEC §7.12).
+// the page so the keys and plaintext leave memory (SPEC §7.4).
 
-import * as api from "./api.js";
-import * as flows from "./flows.js";
-import { UserFacingError } from "./passkeys.js";
-import { RollbackError } from "./lib/save.js";
-import { WrongKeyError } from "./lib/keys.js";
-import { isDue } from "./lib/maintenance.js";
-import { formatRecoveryKey, generateRecoveryKey } from "./lib/recovery-key.js";
-import { parseSetupFragment } from "./lib/setup-link.js";
-import { contentOf, deleteEntry, rollbackCheck, upsertEntry } from "./lib/vault.js";
+import * as api from "../sdk/api.js";
+import { flows } from "./flows.js";
+import { UserFacingError } from "../sdk/passkeys.js";
+import { RollbackError, rollbackCheck } from "../sdk/save.js";
+import { WrongKeyError } from "../sdk/keys.js";
+import { isDue } from "../sdk/maintenance.js";
+import { formatRecoveryKey, generateRecoveryKey } from "../sdk/recovery-key.js";
+import { parseSetupFragment } from "../sdk/setup-link.js";
+import { contentOf, deleteEntry, upsertEntry } from "./lib/vault.js";
 import { h, replaceChildren } from "./ui/dom.js";
 import * as screens from "./ui/screens.js";
 
@@ -106,11 +106,22 @@ async function showUnlock() {
   );
 }
 
+/** A vault whose keys are missing on the server (e2ee-store SDK SPEC §6.2). Creating a new one would get new keys, and
+ * the existing vault could never be opened again. */
+const showKeysMissing = () =>
+  show(
+    screens.message({
+      title: "The vault's keys are missing",
+      text: "This account has a vault, but its keys are missing on the server. Don't create a new vault: restore the server's data from a backup first.",
+    }),
+  );
+
 async function handleUnlock(result) {
   if (result.kind === "unlocked") return openVault(result.session);
   if (result.kind === "no-vault") {
     return show(screens.message({ title: "No vault yet", text: "This account has no vault yet. Open a setup link to create one." }));
   }
+  if (result.kind === "keys-missing") return showKeysMissing();
   // A passkey without a slot: the recovery key unlocks, then this passkey gets its slot.
   holdingSecrets();
   return recover(result.keys, { credentialId: result.credentialId, prfOutput: result.prfOutput });
@@ -170,15 +181,7 @@ async function setup(token) {
   }
   const keys = await flows.loadKeys();
   if (keys) return recover(keys, null);
-  if (await api.getRef("vault")) {
-    // A new vault would get new keys, and the existing vault could never be opened again.
-    return show(
-      screens.message({
-        title: "The vault's keys are missing",
-        text: "This account has a vault, but its keys are missing on the server. Don't create a new vault: restore the server's data from a backup first.",
-      }),
-    );
-  }
+  if (await api.getRef("vault")) return showKeysMissing();
   show(
     screens.createPasskey({
       title: "Create your vault",
@@ -202,6 +205,7 @@ function showNewRecoveryKey(passkey) {
       onConfirm: action(async () => {
         const result = await flows.createVault({ ...secrets, ...passkey });
         if (result.kind === "created") return openVault(result.session);
+        if (result.kind === "keys-missing") return showKeysMissing();
         show(
           screens.message({
             title: "A vault already exists",
@@ -217,7 +221,7 @@ function showNewRecoveryKey(passkey) {
 
 // ---------------------------------------------------------------- the vault
 
-/** SPEC §7.5: compares the vault's revision with the highest this device has seen. */
+/** SPEC §7.3: compares the vault's revision with the highest this device has seen. */
 function checkRevision(revision) {
   const seen = remembered.get(revisionKey());
   const { rolledBack, highest } = rollbackCheck(seen, revision);
@@ -227,6 +231,8 @@ function checkRevision(revision) {
 
 function showWarnings() {
   const rollback = session?.rollback;
+  // SPEC §6: a newer format opens read-only, and says so up front rather than at the first save.
+  const readOnly = session && (!session.vault.writable || !session.keys.writable);
   replaceChildren(
     warnings,
     rollback &&
@@ -236,6 +242,8 @@ function showWarnings() {
         `The server returned an older version of your vault (revision ${rollback.got}; this device has seen ${rollback.seen}). Recent changes may be missing, so saving is paused. `,
         h("button", { type: "button", id: "acknowledge-rollback", onclick: acknowledgeRollback }, "Continue anyway"),
       ),
+    readOnly &&
+      h("p", { class: "banner warn", role: "status", id: "read-only-warning" }, "This vault was saved by a newer version of the app, so it's read-only here. Update the app to make changes."),
   );
 }
 
@@ -328,7 +336,7 @@ function showEditor(entry) {
 
 // ---------------------------------------------------------------- settings
 
-/** Runs `fn`; if the server wants a recent login first (backend SPEC §6.5), asks for one and runs it again. */
+/** Runs `fn`; if the server wants a recent login first (e2ee-store/backend/SPEC.md §6.5), asks for one and runs it again. */
 async function withStepUp(fn) {
   try {
     return await fn();
@@ -339,7 +347,7 @@ async function withStepUp(fn) {
       show(
         screens.confirmIdentity({
           onConfirm: async () => {
-            await flows.reauthenticate();
+            await flows.reauthenticate(session);
             fn().then(resolve, reject);
           },
           onCancel: () => {

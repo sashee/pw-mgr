@@ -4,7 +4,7 @@ set -euo pipefail
 port="${1:-8080}"
 socket=./data/backend.sock
 
-./backend/target/debug/backend serve &
+"${BACKEND:-./data/backend/bin/backend}" serve &
 server=$!
 shim=""
 trap 'kill $server $shim 2>/dev/null || true' EXIT INT TERM

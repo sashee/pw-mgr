@@ -1,21 +1,32 @@
 # Entry point: `nix-build nix` builds both packages and runs every check.
 #
 #   nix-build nix                          # packages + all checks (what CI runs)
-#   nix-build nix -A backend               # the backend (its doCheck runs the Rust suite)
-#   nix-build nix -A web                   # the frontend's static files
+#   nix-build nix -A backend               # e2ee-store's backend (its doCheck runs the Rust suite)
+#   nix-build nix -A sdk                   # e2ee-store's SDK and browser-test harness
+#   nix-build nix -A web                   # the frontend's static files, with the SDK inside
 #   nix-build nix -A checks.web-unit       # the frontend's unit tests
-#   nix-build nix -A checks.e2e-flows      # one browser test (also e2e-settings, e2e-import-kdbx)
+#   nix-build nix -A checks.e2e-flows      # one browser test (also e2e-settings, e2e-safety, e2e-locking,
+#                                          # e2e-import-kdbx)
 #   nix-build nix -A checks.vm             # the NixOS module (./module.nix) in a VM
 #
 # No flake, like the sibling repositories: the packages are callPackage functions and take the caller's
-# nixpkgs, so the one pin lives in ./pkgs.nix.
+# nixpkgs, so the one nixpkgs pin lives in ./pkgs.nix. e2ee-store is pinned in ./e2ee-store.nix.
 {
   pkgs ? import ./pkgs.nix { },
 }:
 let
-  backend = pkgs.callPackage ../backend/package.nix { };
-  web = pkgs.callPackage ../web/package.nix { };
-  checks = import ./checks.nix { inherit pkgs backend; };
+  e2eeStore = import ./e2ee-store.nix;
+  backend = pkgs.callPackage (e2eeStore + "/backend/package.nix") { };
+  sdk = pkgs.callPackage (e2eeStore + "/sdk/package.nix") { };
+  web = pkgs.callPackage ../web/package.nix { inherit sdk; };
+  checks = import ./checks.nix {
+    inherit
+      pkgs
+      backend
+      sdk
+      web
+      ;
+  };
 in
 pkgs.symlinkJoin {
   name = "pw-mgr";
@@ -27,5 +38,12 @@ pkgs.symlinkJoin {
   postBuild = ''
     : ${pkgs.lib.concatStringsSep " " (map toString (builtins.attrValues checks))}
   '';
-  passthru = { inherit backend web checks; };
+  passthru = {
+    inherit
+      backend
+      sdk
+      web
+      checks
+      ;
+  };
 }

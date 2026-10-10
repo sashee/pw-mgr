@@ -1,4 +1,4 @@
-# NixOS module: the backend serving the password manager on a Unix socket.
+# NixOS module: the password manager, as an instance of e2ee-store's module (nix/module.nix there) named `pw-mgr`.
 #
 #   imports = [ "${pw-mgr}/nix/module.nix" ];
 #   services.pw-mgr.enable = true;
@@ -18,41 +18,28 @@
 let
   cfg = config.services.pw-mgr;
   name = "pw-mgr";
+  e2eeStore = import ./e2ee-store.nix;
   settingsFormat = pkgs.formats.toml { };
-  configFile = settingsFormat.generate "pw-mgr.toml" cfg.settings;
-  backend = [
-    (lib.getExe cfg.package)
-    "--config"
-    configFile
-  ];
-
-  cli = pkgs.writeShellScriptBin name ''
-    cmd=(${lib.escapeShellArgs backend} "$@")
-    if [ "$(${pkgs.coreutils}/bin/id -u)" = 0 ]; then
-      exec ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- "''${cmd[@]}"
-    elif [ "$(${pkgs.coreutils}/bin/id -un)" = ${cfg.user} ]; then
-      exec "''${cmd[@]}"
-    else
-      echo "${name}: run as root (e.g. sudo ${name} user list); it switches to the ${cfg.user} user" >&2
-      exit 1
-    fi
-  '';
 in
 {
+  imports = [ (e2eeStore + "/nix/module.nix") ];
+
   options.services.pw-mgr = {
     enable = lib.mkEnableOption "the pw-mgr password manager backend";
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../backend/package.nix { };
-      defaultText = lib.literalExpression "pkgs.callPackage ../backend/package.nix { }";
+      default = pkgs.callPackage (e2eeStore + "/backend/package.nix") { };
+      defaultText = lib.literalExpression "pkgs.callPackage \"\${e2ee-store}/backend/package.nix\" { }";
       description = "The backend.";
     };
 
     webPackage = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../web/package.nix { };
-      defaultText = lib.literalExpression "pkgs.callPackage ../web/package.nix { }";
+      default = pkgs.callPackage ../web/package.nix {
+        sdk = pkgs.callPackage (e2eeStore + "/sdk/package.nix") { };
+      };
+      defaultText = lib.literalExpression "pkgs.callPackage ../web/package.nix { sdk = …; }";
       description = "The frontend's static files, served by the backend.";
     };
 
@@ -65,7 +52,7 @@ in
       };
       description = ''
         The backend's configuration file (backend SPEC §10). `socket`, `database` and `static_dir`
-        are set by this module.
+        are set by e2ee-store's module.
       '';
     };
 
@@ -92,68 +79,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    services.pw-mgr.settings = {
-      socket = cfg.socketPath;
-      database = "/var/lib/${name}/backend.sqlite3";
-      static_dir = "${cfg.webPackage}/share/pw-mgr/web";
-      # Shown in passkey prompts; the app's own title.
-      rp_name = lib.mkDefault "Passwords";
-    };
-
-    users.users.${cfg.user} = {
-      isSystemUser = true;
-      group = cfg.group;
-      description = "pw-mgr backend";
-    };
-    users.groups.${cfg.group} = { };
-
-    environment.systemPackages = [ cli ];
-
-    systemd.services.${name} = {
-      description = "pw-mgr password manager backend";
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        # The backend doesn't notify readiness. Nothing needs it: whatever forwards to the socket
-        # connects per request.
-        Type = "simple";
-        ExecStart = "${lib.escapeShellArgs backend} serve";
-        Restart = "on-failure";
-        RestartSec = "5s";
-
-        User = cfg.user;
-        Group = cfg.group;
-        UMask = "0077";
-        StateDirectory = name;
-        StateDirectoryMode = "0700";
-        # The directory's mode and group are the access control: the backend sets 0660 on the socket
-        # only after bind().
-        RuntimeDirectory = name;
-        RuntimeDirectoryMode = "0750";
-
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        PrivateDevices = true;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectKernelLogs = true;
-        ProtectControlGroups = true;
-        ProtectClock = true;
-        ProtectHostname = true;
-        ProtectProc = "invisible";
-        ProcSubset = "pid";
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        CapabilityBoundingSet = [ "" ];
-        SystemCallFilter = [ "@system-service" ];
-        SystemCallArchitectures = "native";
-        # Unix socket only (backend SPEC §3.1), enforced by the kernel.
-        RestrictAddressFamilies = [ "AF_UNIX" ];
-      };
+    services.e2ee-store.instances.${name} = {
+      inherit (cfg) package;
+      staticDir = "${cfg.webPackage}/share/pw-mgr/web";
+      settings = lib.mkMerge [
+        # Shown in passkey prompts; the app's own title.
+        { rp_name = lib.mkDefault "Passwords"; }
+        cfg.settings
+      ];
     };
   };
 }

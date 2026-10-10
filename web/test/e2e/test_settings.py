@@ -1,7 +1,7 @@
-"""End-to-end: settings, the password generator, cleanup, rollback and the conflict notice (web SPEC §7.4–§7.11,
-§9.4), against the real backend. Step-up is shortened to 5 seconds so it can be exercised.
+"""End-to-end: settings, the password generator, cleanup, rollback and the conflict notice (web SPEC §7, §9.4;
+e2ee-store/sdk/SPEC.md §6.4–§6.11), against the real backend. Step-up is shortened to 5 seconds so it can be exercised.
 
-    BACKEND_BIN=backend/target/debug/backend python web/test/e2e/test_settings.py
+    BACKEND_BIN=data/backend/bin/backend PYTHONPATH=data/sdk/share/e2ee-store/testing python web/test/e2e/test_settings.py    # after `make deps`
 """
 
 import re

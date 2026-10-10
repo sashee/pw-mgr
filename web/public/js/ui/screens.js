@@ -1,10 +1,10 @@
 // The screens (SPEC §9.1). Each returns an element; actions are passed in, nothing here talks to the server.
 
 import { blankEntry, changedFields, entryErrors, linkableUrl, searchEntries, urlHost } from "../lib/vault.js";
-import { parseRecoveryKey } from "../lib/recovery-key.js";
-import { parseSetupInput } from "../lib/setup-link.js";
+import { parseRecoveryKey } from "../../sdk/recovery-key.js";
+import { parseSetupInput } from "../../sdk/setup-link.js";
 import { CLASSES, describe, generatePassword, MAX_LENGTH, MIN_LENGTH, normalizeOptions } from "../lib/password.js";
-import { formatBytes, summary } from "../lib/maintenance.js";
+import { formatBytes, summary } from "../../sdk/maintenance.js";
 import { copySecret } from "./clipboard.js";
 import { busy, h, replaceChildren } from "./dom.js";
 
@@ -232,7 +232,7 @@ export function editor({ entry, isNew, generatorOptions, onGeneratorOptions, onS
   );
 }
 
-// ---------------------------------------------------------------- settings (SPEC §7.6–§7.11)
+// ---------------------------------------------------------------- settings (e2ee-store/sdk/SPEC.md §6.6–§6.11)
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
 

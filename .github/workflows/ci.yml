@@ -44,9 +44,9 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31.10.7
 
-      # Both packages and every check, in the Nix sandbox: lint (rustfmt, clippy), the Rust suite (in the
-      # backend's build), the frontend's unit tests (including the KeePass import against pykeepass's sample
-      # databases) and the browser tests (Chromium with a PRF-capable virtual authenticator). The same as
+      # Both packages and every check, in the Nix sandbox: e2ee-store's Rust suite (in the backend's build), the
+      # frontend's unit tests (including the KeePass import against pykeepass's sample databases), the browser
+      # tests (Chromium with a PRF-capable virtual authenticator) and the NixOS module in a VM. The same as
       # `make check` locally.
       - name: Build and test
         run: make check

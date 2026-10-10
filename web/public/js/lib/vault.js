@@ -1,4 +1,4 @@
-// The vault document (SPEC §6) and its operations (SPEC §7.4). Pure: no clock, no randomness, no I/O.
+// The vault document (SPEC §6) and its operations (SPEC §7.1). Pure: no clock, no randomness, no I/O.
 
 export const FORMAT = "pw-mgr/vault";
 export const VERSION = 1;
@@ -102,8 +102,11 @@ export function urlHost(text) {
   }
 }
 
-/** SPEC §7.5: a vault older than the highest revision this device has seen is a rollback. */
-export const rollbackCheck = (highestSeen, revision) => ({
-  rolledBack: highestSeen !== null && revision < highestSeen,
-  highest: Math.max(highestSeen ?? 0, revision),
-});
+/** The vault document as the SDK's flows see it (e2ee-store/sdk/SPEC.md §5). */
+export const vaultDocument = {
+  empty: newVault,
+  read: readVault,
+  commit,
+  revision: (vault) => vault.revision,
+  keep: (vault) => vault.history ?? [],
+};

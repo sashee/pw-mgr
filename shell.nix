@@ -4,12 +4,6 @@
 }:
 pkgs.mkShell {
   packages = [
-    # backend
-    pkgs.cargo
-    pkgs.rustc
-    pkgs.clippy
-    pkgs.rustfmt
-    pkgs.sqlite
     # local serving: socat forwards a loopback port to the backend's socket
     pkgs.socat
     # frontend unit tests
