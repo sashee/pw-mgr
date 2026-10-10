@@ -102,6 +102,8 @@ All derivations use HKDF-SHA256 with an empty salt.
 - **The MK in memory:** while the vault is unlocked, the MK is held as raw bytes, because it has to be wrapped again whenever a passkey is added. Locking discards it by reloading the page.
 - **PRF input:** a constant, `prf.eval.first = UTF-8("pw-mgr/prf/v1")`. Login uses discoverable credentials, so the client doesn't know which credential will answer and can't choose a different input per credential. The PRF output is still unique to each passkey.
 - **No key stretching:** the recovery key is 32 random bytes, so HKDF is enough.
+- **Sizes are checked:** a PRF output must be exactly 32 bytes in an `ArrayBuffer` or a view of one, and wrapping refuses any secret or master key that isn't 32 bytes. A client that returned the PRF output in another form (e.g. a base64 string) would otherwise wrap the master key under a key anyone can compute.
+- **State ID:** `HKDF(MK, info = "pw-mgr/device-state-id/v1")`, 16 bytes in hex. What a device remembers about the vault in `localStorage` is filed under it, so the server can't redirect it (e.g. by reporting another user ID).
 
 ### 4.2 Vault blob
 
@@ -220,7 +222,8 @@ When the app starts with a fragment:
 1. It reads the token and immediately removes the fragment with `history.replaceState`, so it doesn't stay in history or on screen.
 2. `POST /auth/setup-token`. A 401 means "This link has expired or was already used".
 3. `GET /refs/keys`:
-   - **No `keys` ref:** create the vault (§7.3).
+   - **No `keys` ref and no `vault` ref:** create the vault (§7.3).
+   - **No `keys` ref but a `vault` ref:** stop and tell the user to restore the server's data. A new vault would come with new keys, and the existing vault could never be opened again.
    - **`keys` exists:** ask for the recovery key and unwrap the MK from `recovery`.
 4. With the MK in memory, it registers a passkey on this host and sets it up (§7.6, steps 2–6). The setup-token session is fresh, so no step-up is needed. The user can skip this step, but then the next unlock on this host needs the recovery key again.
 
@@ -259,7 +262,8 @@ A save applies an operation:
 
 ### 7.5 Rollback detection
 
-- The client stores the highest vault `revision` it has seen in `localStorage`, under a key per user ID.
+- The client stores the highest vault `revision` it has seen in `localStorage`, under the state ID (§4.1).
+- A save that runs into a conflict whose current vault isn't newer than the one being saved over is a rollback too: the save stops, the warning is shown, and nothing is written on top of the older vault.
 - If a loaded vault has a lower revision, it shows a warning: "The server returned an older version of your vault".
 - Saving is blocked until the user acknowledges the warning, which resets the stored value.
 
@@ -290,7 +294,7 @@ From Settings → Passkeys → Add:
 
 From Settings → Add device. The new device may use another host, e.g. the HTTPS path when this device uses iroh.
 
-1. `POST /me/setup-tokens`, handling step-up as in §7.6.
+1. `POST /me/setup-tokens`, handling step-up as in §7.6. A session that wasn't created with a passkey (e.g. right after a setup link) gets `passkey_session_required` and is asked to log in with a passkey, the same way.
 2. Show the setup links, each with a copy button and a countdown to expiry:
    - every link from the response
    - the fragment on its own, `/#setup=<token>`, to add to a local iroh address
@@ -327,7 +331,12 @@ The server never cleans anything up, so the client does. Maintenance runs in two
 
 **Steps:**
 
-1. **Prune the keys document:** save it with `prune`, which removes passkey slots whose credential ID is not in `GET /me/passkeys`. Nothing is saved if nothing changed.
+0. **Check before deleting anything.** Stop, deleting nothing, if:
+   - either ref is missing
+   - the vault or keys document is from a newer version
+   - the server's vault is older than this session's, or a rollback warning is shown
+   - any listed blob ID isn't 64 hex characters (IDs go into URLs)
+1. **Prune the keys document:** save it with `prune`, which removes passkey slots whose credential ID is not in `GET /me/passkeys`. Nothing is saved if nothing changed. Only the slots found stale are removed, also when the save is re-applied after a conflict, so a slot another device just added is never pruned.
 2. **Build the keep set:** the current `keys` blob, the current `vault` blob, and every ID in the vault's `history`.
 3. **Delete old blobs:**
    - List all blobs.
@@ -362,6 +371,8 @@ The client locks on:
 - the Lock button
 - 15 minutes without pointer or keyboard input
 - any 401 from the API
+
+The inactivity timer runs from the moment the page loads, not only once the vault is open: on some paths (recovery key, vault creation) secrets are in memory earlier. The Lock button shows as soon as a secret is in memory.
 
 Locking runs `POST /auth/logout` (ignoring errors) and then `location.reload()`. The reload drops the MK and every decrypted value from memory. Unlocking again is one passkey prompt.
 
@@ -464,7 +475,7 @@ The import is expected to run once, so it is built to be deleted afterwards.
 | Vault        | Search box, "New entry" button, the entry list, and the selected entry's details (side by side on wide screens, stacked on narrow ones) |
 | Entry editor | Title, username, password (with show/hide and generate), URLs (one per line), notes. Save, Cancel, and Delete (with confirmation). |
 | Import       | Provided by the import module (§8.5): file and key file pickers, password field, KDF progress bar, then the preview with a confirm button |
-| Settings     | Passkeys (name, host, created, last used, "this session", "can unlock", with Add / Set up / Delete), Add device, Recovery key, Import from KeePass, Storage (last cleanup summary and "Clean up now"), Lock |
+| Settings     | Passkeys (name, host, created, last used, "this session", "can unlock", with Add / Set up / Delete), Add device, Recovery key (test the saved key against the vault; create a new one), Import from KeePass, Storage (last cleanup summary and "Clean up now"), Lock |
 
 - **Always visible:** a Lock button and a banner area for warnings (rollback, integrity, read-only).
 - **Layout:** the layout works on phones, because the Android app is one of the main clients.
@@ -480,6 +491,8 @@ The import is expected to run once, so it is built to be deleted afterwards.
 - **Feedback:** a copy button shows "Copied" for 2 seconds.
 - **Search:** a case-insensitive substring match on the title, username, URLs and notes.
 - **Rendering safety:** vault data is only ever inserted with `textContent`, attribute setters or `href` after the scheme check. It is never inserted with `innerHTML`.
+- **No spellcheck:** the editor's fields have `spellcheck="false"`; with Chrome's enhanced spellcheck their text would otherwise be sent to Google.
+- **Error messages:** errors from the server are shown with the client's own text for each error code, never the server's message, so a malicious server can't put its own words (e.g. a request for the recovery key) in front of the user.
 
 ### 9.2.1 Entry history
 

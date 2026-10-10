@@ -16,14 +16,22 @@ export class WrongKeyError extends Error {
 
 const aad = (kind) => te.encode(`pw-mgr/keys/v1/${kind}`);
 
+/** Both kinds of secret (a PRF output, the recovery key) and the master key are 32 random bytes. */
+function check32(value, what) {
+  if (!(value instanceof Uint8Array) || value.length !== 32) throw new Error(`${what} must be 32 bytes`);
+}
+
 /** Wraps the master key with the KEK derived from `secret` (a PRF output or the recovery key). */
 export async function wrap(kind, secret, masterKey, now) {
+  check32(secret, "The key-encryption secret");
+  check32(masterKey, "The master key");
   const kek = await hkdfAesKey(secret, KEK_INFO[kind]);
   const { nonce, ciphertext } = await aesGcmEncrypt(kek, masterKey, aad(kind));
   return { nonce: b64urlEncode(nonce), wrapped_key: b64urlEncode(ciphertext), created_at: new Date(now).toISOString() };
 }
 
 export async function unwrap(kind, secret, slot) {
+  check32(secret, "The key-encryption secret");
   const kek = await hkdfAesKey(secret, KEK_INFO[kind]);
   try {
     return await aesGcmDecrypt(kek, b64urlDecode(slot.nonce), b64urlDecode(slot.wrapped_key), aad(kind));

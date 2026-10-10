@@ -2,6 +2,16 @@
 
 export const MAX_ATTEMPTS = 5;
 
+/** The server answered a conflict with a document that can't be newer than the one being saved over. */
+export class RollbackError extends Error {
+  constructor(conflict, base) {
+    super("The server returned an older version during a save. Saving is paused; your change wasn't saved.");
+    this.name = "RollbackError";
+    this.conflict = conflict;
+    this.base = base;
+  }
+}
+
 export class TooManyConflictsError extends Error {
   constructor() {
     super("Too many other changes at the same time; try again");
@@ -16,8 +26,10 @@ export class TooManyConflictsError extends Error {
  * io.putBlob(bytes) → blob id
  * io.putRef(ref, blobId, expectedBlobId) → { ok: true } | { ok: false, current: blobId | null }
  * io.getBlob(blobId) → bytes (hash-verified)
+ *
+ * `accept(conflict, base)` vets the document a conflict points to; returning false throws RollbackError.
  */
-export async function saveWithRetry(io, { ref, loaded, apply, encode, decode, attempts = MAX_ATTEMPTS }) {
+export async function saveWithRetry(io, { ref, loaded, apply, encode, decode, accept = () => true, attempts = MAX_ATTEMPTS }) {
   let base = loaded;
   for (let attempt = 0; attempt < attempts; attempt++) {
     const doc = apply(base.doc, base.blobId);
@@ -25,7 +37,9 @@ export async function saveWithRetry(io, { ref, loaded, apply, encode, decode, at
     const result = await io.putRef(ref, blobId, base.blobId);
     if (result.ok) return { doc, blobId, previous: base };
     if (!result.current) throw new Error(`The ${ref} ref disappeared`);
-    base = { doc: await decode(await io.getBlob(result.current)), blobId: result.current };
+    const conflict = await decode(await io.getBlob(result.current));
+    if (!accept(conflict, base.doc)) throw new RollbackError(conflict, base.doc);
+    base = { doc: conflict, blobId: result.current };
   }
   throw new TooManyConflictsError();
 }

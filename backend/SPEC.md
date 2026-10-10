@@ -256,7 +256,7 @@ If the session is too old, the server returns 403 `reauth_required`. The client 
 
 - **Creation:** setup tokens can be created in two ways. Either way, the token is shown once.
   - By the admin CLI: `user create` and `setup-token create`.
-  - By a logged-in user for their own account: `POST /me/setup-tokens`, which needs step-up.
+  - By a logged-in user for their own account: `POST /me/setup-tokens`. This needs step-up, and the session must have been created with a passkey (not from a setup token). Otherwise a stolen setup-token session could keep creating setup tokens and renew itself forever, invisibly, even after every passkey is deleted.
 - **Purposes:**
   - Bootstrapping a new user.
   - Adding a device on a host where the user has no passkey yet (passkeys are tied to one host, §6.1).
@@ -383,6 +383,8 @@ All storage belongs to one user. Every store query takes the `user_id` from the 
 { "token": "…", "expires_at": "…", "links": [ "https://pw.example.com/#setup=…" ] }
 ```
 `links` has one entry per configured public host and is empty when there are none.
+- **403** `reauth_required`: the session is older than the step-up window.
+- **403** `passkey_session_required`: the session wasn't created with a passkey.
 
 `GET /me/passkeys` returns:
 ```json
@@ -491,6 +493,7 @@ The ref name is the raw path after `/refs/`. Slashes stay as they are; no percen
 | 401  | `invalid_token`          | The setup token is unknown, expired or already used |
 | 403  | `forbidden`              | The Origin check failed |
 | 403  | `reauth_required`        | Step-up is needed |
+| 403  | `passkey_session_required` | Creating a setup token needs a session created with a passkey |
 | 404  | `not_found`              | The blob, ref or passkey doesn't exist |
 | 409  | `blob_referenced`        | A ref still points to the blob |
 | 409  | `blob_not_found`         | The ref target doesn't exist |

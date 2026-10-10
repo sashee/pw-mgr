@@ -278,7 +278,13 @@ async fn step_up_is_required_after_5_minutes() {
 #[tokio::test]
 async fn users_create_setup_tokens_for_themselves() {
     let h = Harness::new();
-    let cookie = h.signed_up("alice", PHONE).await;
+    let setup_cookie = h.signed_up("alice", PHONE).await;
+    let phone = Authenticator::new(1);
+    h.register(PHONE, &setup_cookie, &phone, "Phone").await;
+    let cookie = h
+        .login(PHONE, &phone, &h.user_handle("alice"), None)
+        .await
+        .cookie();
     let reply = h
         .post_json(PHONE, "/api/v1/me/setup-tokens", Some(&cookie), json!({}))
         .await;
@@ -437,4 +443,16 @@ async fn expired_rows_are_purged() {
     h.advance(5 * HOUR);
     let purged = backend::store::purge_expired(&h.conn(), h.now()).unwrap();
     assert_eq!(purged, 3, "a session, bob's setup token and a ceremony");
+}
+
+#[tokio::test]
+async fn only_passkey_sessions_create_setup_tokens() {
+    // A session from a setup token could otherwise mint the next setup token, and so on, forever.
+    let h = Harness::new();
+    let cookie = h.signed_up("alice", PHONE).await;
+    let reply = h
+        .post_json(PHONE, "/api/v1/me/setup-tokens", Some(&cookie), json!({}))
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(reply.json()["error"], "passkey_session_required");
 }

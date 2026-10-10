@@ -176,12 +176,13 @@ function entryDetail(entry, { onEdit, onDelete, onHistory, onError }) {
 
 export function editor({ entry, isNew, generatorOptions, onGeneratorOptions, onSave, onCancel, onError }) {
   const value = entry ?? blankEntry(crypto.randomUUID());
-  const title = h("input", { id: "title", value: value.title, required: true, maxlength: 200 });
-  const username = h("input", { id: "username-input", value: value.username, autocomplete: "off" });
+  // No spellcheck anywhere: with Chrome's enhanced spellcheck, the text would be sent to Google.
+  const title = h("input", { id: "title", value: value.title, required: true, maxlength: 200, spellcheck: "false" });
+  const username = h("input", { id: "username-input", value: value.username, autocomplete: "off", spellcheck: "false" });
   const password = h("input", { id: "password-input", type: "password", value: value.password, autocomplete: "new-password" });
-  const urls = h("textarea", { id: "urls", rows: 2, placeholder: "One URL per line" });
+  const urls = h("textarea", { id: "urls", rows: 2, placeholder: "One URL per line", spellcheck: "false" });
   urls.value = (value.urls ?? []).join("\n");
-  const notes = h("textarea", { id: "notes", rows: 6 });
+  const notes = h("textarea", { id: "notes", rows: 6, spellcheck: "false" });
   notes.value = value.notes ?? "";
   const problems = h("ul", { class: "error", role: "alert" });
   const toggle = h("button", { type: "button", onclick: () => reveal(password.type === "password") }, "Show");
@@ -235,7 +236,7 @@ export function editor({ entry, isNew, generatorOptions, onGeneratorOptions, onS
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
 
-export function settings({ host, passkeys, slots, lastCleanup, onAddPasskey, onSetUp, onDeletePasskey, onAddDevice, onReplaceRecoveryKey, onCleanup, onImport, onBack, onError }) {
+export function settings({ host, passkeys, slots, lastCleanup, onAddPasskey, onSetUp, onDeletePasskey, onAddDevice, onReplaceRecoveryKey, onTestRecoveryKey, onCleanup, onImport, onBack, onError }) {
   const canUnlockCount = passkeys.filter((p) => slots.includes(p.id)).length;
   const passkeyRow = (p) => {
     const canUnlock = slots.includes(p.id);
@@ -274,6 +275,7 @@ export function settings({ host, passkeys, slots, lastCleanup, onAddPasskey, onS
     ),
     section(
       "Recovery key",
+      recoveryKeyTest(onTestRecoveryKey, onError),
       h("p", {}, "Replace your recovery key, e.g. if you lost the old one. The old key stops working."),
       h("div", { class: "actions" }, actionButton("Create a new recovery key", onReplaceRecoveryKey, onError, { id: "replace-recovery-key" })),
     ),
@@ -472,5 +474,31 @@ export function entryHistory({ entry, onRestore, onBack, onError }) {
       h("p", { class: "muted" }, "Earlier versions of this entry, newest first. The last 10 are kept."),
       h("ul", { class: "versions", id: "versions" }, entry.history.map(versionView)),
     ),
+  );
+}
+
+/** Checks the recovery key the user wrote down against the vault (SPEC §9.1). The key isn't kept. */
+function recoveryKeyTest(onTest, onError) {
+  const input = h("input", { id: "test-recovery-key", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "64 hex characters" });
+  const result = h("p", { id: "recovery-test-result", role: "status" });
+  const test = async () => {
+    const key = parseRecoveryKey(input.value);
+    input.value = "";
+    if (!key) return (result.textContent = "A recovery key is 64 hex characters.");
+    const outcome = await onTest(key);
+    result.textContent = {
+      ok: "This recovery key opens your vault.",
+      wrong: "This key does NOT open your vault. Check what you wrote down, or create a new recovery key.",
+      missing: "The vault has no recovery slot on the server. Create a new recovery key.",
+    }[outcome];
+    result.className = outcome === "ok" ? "" : "error";
+  };
+  return h(
+    "div",
+    {},
+    h("p", {}, "Check that the recovery key you saved still opens the vault."),
+    h("label", {}, "Recovery key", input),
+    h("div", { class: "actions" }, actionButton("Test recovery key", test, onError, { id: "test-recovery" })),
+    result,
   );
 }

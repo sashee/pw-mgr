@@ -59,3 +59,34 @@ test("keyslots unwrap only with the right secret and kind", async () => {
   await assert.rejects(unwrap("passkey", new Uint8Array(32), slot), WrongKeyError);
   await assert.rejects(unwrap("recovery", prf, slot), WrongKeyError, "the kind is bound through the AAD and the KEK");
 });
+
+import { hkdfBytes } from "../../public/js/lib/crypto.js";
+import { prfResult, UserFacingError } from "../../public/js/passkeys.js";
+
+test("keyslots refuse secrets that aren't 32 bytes", async () => {
+  const masterKey = new Uint8Array(32).fill(9);
+  for (const secret of [new Uint8Array(0), new Uint8Array(31), new Uint8Array(33)]) {
+    await assert.rejects(wrap("passkey", secret, masterKey, 0), /32 bytes/);
+    await assert.rejects(unwrap("passkey", secret, { nonce: "AAAAAAAAAAAAAAAA", wrapped_key: "AA" }), /32 bytes/);
+  }
+  await assert.rejects(wrap("passkey", new Uint8Array(32), new Uint8Array(16), 0), /master key/);
+});
+
+test("PRF outputs must be 32 bytes in an ArrayBuffer or a view", () => {
+  const credential = (first) => ({ getClientExtensionResults: () => ({ prf: { results: { first } } }) });
+  const buffer = new Uint8Array(32).fill(5).buffer;
+  assert.deepEqual(prfResult(credential(buffer)), new Uint8Array(32).fill(5));
+  const view = new Uint8Array(40).fill(6).subarray(4, 36);
+  assert.deepEqual(prfResult(credential(view)), new Uint8Array(32).fill(6));
+  assert.equal(prfResult(credential(undefined)), null);
+  assert.equal(prfResult({ getClientExtensionResults: () => ({}) }), null);
+  for (const bad of ["AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", new ArrayBuffer(0), new Uint8Array(16), { length: 32 }, 32]) {
+    assert.throws(() => prfResult(credential(bad)), UserFacingError, String(bad));
+  }
+});
+
+test("HKDF bytes are deterministic and separated by info", async () => {
+  const ikm = new Uint8Array(32).fill(1);
+  assert.deepEqual(await hkdfBytes(ikm, "a", 16), await hkdfBytes(ikm, "a", 16));
+  assert.notDeepEqual(await hkdfBytes(ikm, "a", 16), await hkdfBytes(ikm, "b", 16));
+});

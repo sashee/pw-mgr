@@ -4,7 +4,7 @@
 // works where parse*FromJSON doesn't exist. PRF results are secrets: they are removed from the credential
 // before it is sent to the server.
 
-import { b64urlDecode, b64urlEncode, bytes, te } from "./lib/crypto.js";
+import { b64urlDecode, b64urlEncode, te } from "./lib/crypto.js";
 
 export const PRF_INPUT = te.encode("pw-mgr/prf/v1");
 
@@ -51,9 +51,20 @@ function manualJSON(credential, kind) {
   };
 }
 
-function prfResult(credential) {
+/**
+ * The PRF output: null when the authenticator gave none. Anything else must be exactly 32 bytes in an
+ * ArrayBuffer or a view of one. A string or an empty buffer would otherwise turn into an empty key, and the
+ * master key would be wrapped under a key anyone can compute.
+ */
+export function prfResult(credential) {
   const first = credential.getClientExtensionResults()?.prf?.results?.first;
-  return first ? new Uint8Array(bytes(first)) : null;
+  if (first === undefined || first === null) return null;
+  const output =
+    first instanceof ArrayBuffer ? new Uint8Array(first.slice(0))
+    : ArrayBuffer.isView(first) ? new Uint8Array(first.buffer.slice(first.byteOffset, first.byteOffset + first.byteLength))
+    : null;
+  if (output === null || output.length !== 32) throw new UserFacingError("The passkey returned a PRF output in an unexpected form, so it can't be used to unlock the vault.");
+  return output;
 }
 
 function explain(error, doing) {

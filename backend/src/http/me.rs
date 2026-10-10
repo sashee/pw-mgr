@@ -34,6 +34,15 @@ pub async fn create_setup_token(
     authed: Authed,
 ) -> Result<Response, ApiError> {
     authed.require_fresh(&state)?;
+    // Only a session created with a passkey: a setup-token session creating setup tokens could renew itself
+    // forever, invisibly, and survive the deletion of every passkey (SPEC §6.6).
+    if authed.session.passkey_id.is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "passkey_session_required",
+            "Log in with a passkey to do this",
+        ));
+    }
     let user_id = authed.session.user_id;
     let now = state.now();
     let (token, expires_at) = state

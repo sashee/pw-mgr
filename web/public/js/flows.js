@@ -5,9 +5,9 @@
 import * as api from "./api.js";
 import * as passkeys from "./passkeys.js";
 import { UserFacingError } from "./passkeys.js";
-import { randomBytes } from "./lib/crypto.js";
+import { hexEncode, hkdfBytes, randomBytes } from "./lib/crypto.js";
 import { contentKey as deriveContentKey, openVault, sealVault } from "./lib/envelope.js";
-import { decodeKeys, emptyKeys, encodeKeys, prune, removePasskey, setPasskey, setRecovery, unwrap, wrap } from "./lib/keys.js";
+import { decodeKeys, emptyKeys, encodeKeys, removePasskey, setPasskey, setRecovery, unwrap, WrongKeyError, wrap } from "./lib/keys.js";
 import { makeReport, planBlobs, prunableSlots } from "./lib/maintenance.js";
 import { generateRecoveryKey } from "./lib/recovery-key.js";
 import { saveWithRetry } from "./lib/save.js";
@@ -32,17 +32,24 @@ async function decryptVault(contentKey, data) {
 
 const loadVault = async (contentKey, blobId) => ({ ...(await decryptVault(contentKey, await api.getBlob(blobId))), blobId });
 
+/**
+ * What this device remembers about the vault (the highest revision seen, the last cleanup) is filed under
+ * an ID derived from the master key: the server can't change it, unlike the user ID it reports.
+ */
+const deriveStateId = async (masterKey) => hexEncode(await hkdfBytes(masterKey, "pw-mgr/device-state-id/v1", 16));
+
 /** Opens the vault with the master key; creates the empty vault if a creation was interrupted. */
 export async function open(masterKey, keys) {
   const contentKey = await deriveContentKey(masterKey);
+  const stateId = await deriveStateId(masterKey);
   const user = await api.me();
   const blobId = await api.getRef("vault");
-  if (blobId) return { masterKey, contentKey, keys, user, vault: await loadVault(contentKey, blobId) };
+  if (blobId) return { masterKey, contentKey, stateId, keys, user, vault: await loadVault(contentKey, blobId) };
   const doc = newVault(now());
   const created = await api.putBlob(await sealVault(contentKey, doc));
   const write = await api.putRef("vault", created, null);
   if (!write.ok) return open(masterKey, keys);
-  return { masterKey, contentKey, keys, user, vault: { doc, blobId: created, writable: true } };
+  return { masterKey, contentKey, stateId, keys, user, vault: { doc, blobId: created, writable: true } };
 }
 
 /** Step-up (backend SPEC §6.5): a passkey login creates a fresh session. PRF isn't needed for it. */
@@ -140,21 +147,29 @@ export async function maintain(session, trigger, onProgress = () => {}) {
   const failed = [];
   let error = null;
   try {
+    // Check everything before deleting anything: a missing or older document must never lead to deletions.
+    onProgress("Reading the current vault");
+    const keysId = await api.getRef("keys");
+    const vaultId = await api.getRef("vault");
+    if (!keysId || !vaultId) throw new Error("The keys or the vault are missing on the server, so nothing was deleted.");
+    const vault = vaultId === current.vault.blobId ? current.vault : await loadVault(current.contentKey, vaultId);
+    if (!current.keys.writable || !vault.writable) throw new Error("The vault was written by a newer version of the app, so nothing was deleted.");
+    if (vault.doc.revision < current.vault.doc.revision) throw new Error("The server returned an older vault than this session's, so nothing was deleted.");
+
     onProgress("Checking passkeys");
     const passkeyIds = (await api.passkeys()).passkeys.map((p) => p.id);
     const stale = prunableSlots(current.keys.doc, passkeyIds);
     if (stale.length > 0) {
-      current = await saveKeys(current, prune(passkeyIds));
+      // Only the slots that were stale now: re-applied after a conflict, a fresh prune could remove a slot that
+      // another device just added for a new passkey.
+      current = await saveKeys(current, (doc) => stale.reduce((d, id) => removePasskey(id)(d), doc));
       slotsRemoved = stale.length;
     }
-    // Keep what the server has now, which may be newer than this session's copy.
-    onProgress("Reading the current vault");
-    const keysId = await api.getRef("keys");
-    const vaultId = await api.getRef("vault");
-    const vault = vaultId === current.vault.blobId ? current.vault : await loadVault(current.contentKey, vaultId);
+
     onProgress("Listing blobs");
     const { blobs, serverNow } = await listAllBlobs();
-    plan = planBlobs({ keep: [keysId, vaultId, ...(vault.doc.history ?? [])], blobs, now: serverNow });
+    blobs.forEach((b) => api.checkBlobId(b.id));
+    plan = planBlobs({ keep: [stale.length > 0 ? current.keys.blobId : keysId, vaultId, ...(vault.doc.history ?? [])], blobs, now: serverNow });
     for (const [index, blob] of plan.toDelete.entries()) {
       onProgress(`Deleting ${index + 1} of ${plan.toDelete.length}`);
       try {
@@ -169,6 +184,23 @@ export async function maintain(session, trigger, onProgress = () => {}) {
     error = e.message ?? String(e);
   }
   return { session: current, report: makeReport({ trigger, startedAt, finishedAt: now(), slotsRemoved, plan, deleted, failed, error }) };
+}
+
+/**
+ * Checks a recovery key against the vault (Settings): it must unwrap the current recovery slot to this
+ * session's master key. Reads the keys from the server, so a removed or replaced slot shows up.
+ * → "ok" | "wrong" | "missing"
+ */
+export async function testRecoveryKey(session, recoveryKey) {
+  const keys = await loadKeys();
+  if (!keys?.doc.recovery) return "missing";
+  try {
+    const masterKey = await unwrap("recovery", recoveryKey, keys.doc.recovery);
+    return masterKey.length === session.masterKey.length && masterKey.every((b, i) => b === session.masterKey[i]) ? "ok" : "wrong";
+  } catch (e) {
+    if (e instanceof WrongKeyError) return "wrong";
+    throw e;
+  }
 }
 
 /** The secrets of a new vault. Nothing is stored until `createVault`. */
@@ -191,7 +223,10 @@ export async function createVault({ masterKey, recoveryKey, credentialId, prfOut
   const vaultWrite = await api.putRef("vault", vaultId, null);
   const keys = { doc: keysDoc, blobId: keysId, writable: true };
   if (!vaultWrite.ok) return { kind: "created", session: await open(masterKey, keys) };
-  return { kind: "created", session: { masterKey, contentKey, keys, user: await api.me(), vault: { doc: vaultDoc, blobId: vaultId, writable: true } } };
+  return {
+    kind: "created",
+    session: { masterKey, contentKey, stateId: await deriveStateId(masterKey), keys, user: await api.me(), vault: { doc: vaultDoc, blobId: vaultId, writable: true } },
+  };
 }
 
 /**
@@ -205,7 +240,13 @@ export async function saveVault(session, operation) {
     loaded: session.vault,
     apply: (doc, blobId) => commit(doc, operation, now(), blobId),
     encode: (doc) => sealVault(session.contentKey, doc),
-    decode: async (data) => (await decryptVault(session.contentKey, data)).doc,
+    decode: async (data) => {
+      const conflict = await decryptVault(session.contentKey, data);
+      if (!conflict.writable) throw new UserFacingError("Another device saved this vault with a newer version of the app; update this one first.");
+      return conflict.doc;
+    },
+    // Another device's save is always a later revision; anything else is the server rolling the vault back.
+    accept: (conflict, base) => conflict.revision > base.revision,
   });
   return { session: { ...session, vault: { doc: saved.doc, blobId: saved.blobId, writable: true } }, base: saved.previous.doc };
 }

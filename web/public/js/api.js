@@ -2,14 +2,41 @@
 
 import { sha256Hex } from "./lib/crypto.js";
 
+// Messages come from here, not from the server, so a misbehaving server can't put its own text in front of
+// the user (e.g. asking for the recovery key).
+const MESSAGES = {
+  unauthenticated: "Your session has ended. Unlock again.",
+  authentication_failed: "The passkey login failed.",
+  invalid_token: "This setup link has expired or was already used.",
+  reauth_required: "Confirm with your passkey to do this.",
+  passkey_session_required: "Log in with your passkey to do this.",
+  registration_failed: "The passkey couldn't be registered.",
+  passkey_exists: "This passkey is already registered.",
+  last_passkey: "Your last passkey can't be deleted.",
+  not_found: "Not found.",
+  blob_not_found: "The data the vault points to is missing on the server.",
+  blob_referenced: "This data is still in use.",
+  precondition_failed: "Someone else changed this at the same time.",
+  blob_too_large: "This is too large to store.",
+  unknown_host: "This address isn't served by the server.",
+  forbidden: "The server refused the request.",
+};
+
 export class ApiError extends Error {
   constructor(status, body) {
-    super(body?.message ?? `Request failed (${status})`);
+    const code = typeof body?.error === "string" && /^[a-z_]{1,40}$/.test(body.error) ? body.error : "unknown";
+    super(MESSAGES[code] ?? `The server refused the request (${code}, HTTP ${status}).`);
     this.name = "ApiError";
     this.status = status;
-    this.code = body?.error ?? "unknown";
+    this.code = code;
     this.body = body;
   }
+}
+
+/** Blob IDs go into URLs, so anything that isn't exactly a SHA-256 in hex is refused (no `../…`). */
+export function checkBlobId(id) {
+  if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id)) throw new IntegrityError(`an invalid blob ID from the server (${String(id).slice(0, 20)})`);
+  return id;
 }
 
 export class IntegrityError extends Error {
@@ -55,7 +82,7 @@ export const registerFinish = (name, credential) => call("POST", "/me/passkeys/r
 /** The ref's target blob ID, or null if the ref doesn't exist. */
 export async function getRef(name) {
   const response = await call("GET", `/refs/${name}`, { okStatuses: [404] });
-  return response.status === 404 ? null : (await response.json()).blob;
+  return response.status === 404 ? null : checkBlobId((await response.json()).blob);
 }
 
 /**
@@ -63,9 +90,12 @@ export async function getRef(name) {
  * Returns { ok: true } or, on 412, { ok: false, current }.
  */
 export async function putRef(name, blobId, expected) {
-  const headers = expected === null ? { "If-None-Match": "*" } : { "If-Match": `"${expected}"` };
+  const headers = expected === null ? { "If-None-Match": "*" } : { "If-Match": `"${checkBlobId(expected)}"` };
   const response = await call("PUT", `/refs/${name}`, { json: { blob: blobId }, headers, okStatuses: [412] });
-  if (response.status === 412) return { ok: false, current: (await response.json()).current };
+  if (response.status === 412) {
+    const current = (await response.json()).current;
+    return { ok: false, current: current === null ? null : checkBlobId(current) };
+  }
   return { ok: true };
 }
 
@@ -78,22 +108,22 @@ export async function putBlob(bytes) {
 
 /** Downloads a blob and checks that it hashes to its ID. */
 export async function getBlob(id) {
-  const data = new Uint8Array(await (await call("GET", `/blobs/${id}`)).arrayBuffer());
+  const data = new Uint8Array(await (await call("GET", `/blobs/${checkBlobId(id)}`)).arrayBuffer());
   if ((await sha256Hex(data)) !== id) throw new IntegrityError(`blob ${id}`);
   return data;
 }
 
-export const deletePasskey = (id) => call("DELETE", `/me/passkeys/${id}`).then(json);
+export const deletePasskey = (id) => call("DELETE", `/me/passkeys/${encodeURIComponent(id)}`).then(json);
 export const createSetupToken = () => call("POST", "/me/setup-tokens", { json: {} }).then(json);
 
 /** One page of blobs, plus the server's clock from the `Date` header (for the cleanup grace period). */
 export async function listBlobs(after = null) {
-  const response = await call("GET", `/blobs${after ? `?after=${after}` : ""}`);
+  const response = await call("GET", `/blobs${after ? `?after=${checkBlobId(after)}` : ""}`);
   const date = Date.parse(response.headers.get("date") ?? "");
   return { ...(await response.json()), serverNow: Number.isNaN(date) ? Date.now() : date };
 }
 
 /** Deletes a blob; one that is already gone counts as deleted. */
 export async function deleteBlob(id) {
-  await call("DELETE", `/blobs/${id}`, { okStatuses: [404] });
+  await call("DELETE", `/blobs/${checkBlobId(id)}`, { okStatuses: [404] });
 }

@@ -4,6 +4,7 @@
 import * as api from "./api.js";
 import * as flows from "./flows.js";
 import { UserFacingError } from "./passkeys.js";
+import { RollbackError } from "./lib/save.js";
 import { WrongKeyError } from "./lib/keys.js";
 import { isDue } from "./lib/maintenance.js";
 import { formatRecoveryKey, generateRecoveryKey } from "./lib/recovery-key.js";
@@ -61,8 +62,9 @@ const remembered = {
   },
   set: (key, value) => localStorage.setItem(key, JSON.stringify(value)),
 };
-const revisionKey = () => `pw-mgr/${session.user.id}/highest-revision`;
-const cleanupKey = () => `pw-mgr/${session.user.id}/last-cleanup`;
+// Filed under an ID derived from the master key, not the user ID the server reports (flows.js).
+const revisionKey = () => `pw-mgr/${session.stateId}/highest-revision`;
+const cleanupKey = () => `pw-mgr/${session.stateId}/last-cleanup`;
 const GENERATOR_KEY = "pw-mgr/generator";
 
 // ---------------------------------------------------------------- locking
@@ -72,6 +74,11 @@ async function lock() {
   await api.logout().catch(() => {});
   location.reload();
 }
+
+/** Shows the Lock button: from the moment a secret (the master key, a PRF output) is in memory. */
+const holdingSecrets = () => {
+  lockButton.hidden = false;
+};
 
 function watchInactivity() {
   let timer = setTimeout(lock, INACTIVITY_LOCK_MS);
@@ -105,6 +112,7 @@ async function handleUnlock(result) {
     return show(screens.message({ title: "No vault yet", text: "This account has no vault yet. Open a setup link to create one." }));
   }
   // A passkey without a slot: the recovery key unlocks, then this passkey gets its slot.
+  holdingSecrets();
   return recover(result.keys, { credentialId: result.credentialId, prfOutput: result.prfOutput });
 }
 
@@ -116,6 +124,7 @@ function recover(keys, passkey) {
       intro: passkey ? "This passkey isn't set up for the vault yet. Enter your recovery key to set it up." : "Enter your recovery key to open your vault on this device.",
       onSubmit: action(async (recoveryKey) => {
         const unlocked = await flows.unlockWithRecoveryKey(keys, recoveryKey);
+        holdingSecrets();
         if (passkey) return openVault(await flows.addPasskeySlot(unlocked, passkey.credentialId, passkey.prfOutput));
         offerPasskey(unlocked);
       }),
@@ -161,6 +170,15 @@ async function setup(token) {
   }
   const keys = await flows.loadKeys();
   if (keys) return recover(keys, null);
+  if (await api.getRef("vault")) {
+    // A new vault would get new keys, and the existing vault could never be opened again.
+    return show(
+      screens.message({
+        title: "The vault's keys are missing",
+        text: "This account has a vault, but its keys are missing on the server. Don't create a new vault: restore the server's data from a backup first.",
+      }),
+    );
+  }
   show(
     screens.createPasskey({
       title: "Create your vault",
@@ -177,6 +195,7 @@ async function setup(token) {
 
 function showNewRecoveryKey(passkey) {
   const secrets = flows.newSecrets();
+  holdingSecrets();
   show(
     screens.showRecoveryKey({
       keyText: formatRecoveryKey(secrets.recoveryKey),
@@ -231,22 +250,27 @@ function openVault(unlocked) {
   session = unlocked;
   session = { ...session, rollback: checkRevision(session.vault.doc.revision) };
   showWarnings();
-  lockButton.hidden = false;
+  holdingSecrets();
   settingsButton.hidden = false;
-  if (first) {
-    watchInactivity();
-    if (isDue(remembered.get(cleanupKey()), Date.now())) automaticCleanup();
-  }
+  if (first && !session.rollback && isDue(remembered.get(cleanupKey()), Date.now())) automaticCleanup();
   showVault();
 }
 
 /** Saves a vault operation and returns the document it was applied to (to detect concurrent edits). */
 async function save(operation) {
   if (session.rollback) throw new UserFacingError("Saving is paused until you continue past the warning about an older vault.");
-  const { session: saved, base } = await flows.saveVault(session, operation);
-  session = { ...saved, rollback: null };
-  checkRevision(session.vault.doc.revision);
-  return base;
+  try {
+    const { session: saved, base } = await flows.saveVault(session, operation);
+    session = { ...saved, rollback: checkRevision(saved.vault.doc.revision) };
+    showWarnings();
+    return base;
+  } catch (error) {
+    if (error instanceof RollbackError) {
+      session = { ...session, rollback: { seen: session.vault.doc.revision, got: error.conflict.revision } };
+      showWarnings();
+    }
+    throw error;
+  }
 }
 
 function showVault() {
@@ -309,7 +333,8 @@ async function withStepUp(fn) {
   try {
     return await fn();
   } catch (error) {
-    if (!(error instanceof api.ApiError && error.code === "reauth_required")) throw error;
+    // Too old a session, or one not created with a passkey (e.g. from a setup token): log in with a passkey.
+    if (!(error instanceof api.ApiError && ["reauth_required", "passkey_session_required"].includes(error.code))) throw error;
     return new Promise((resolve, reject) => {
       show(
         screens.confirmIdentity({
@@ -331,7 +356,7 @@ async function showSettings() {
   show(screens.loading("Loading settings"));
   // The keys may have changed on another device (e.g. it added its passkey's slot) since this session loaded them.
   const [{ passkeys }, keys] = await Promise.all([api.passkeys(), flows.loadKeys()]);
-  session = { ...session, keys };
+  if (keys) session = { ...session, keys };
   show(
     screens.settings({
       host: location.hostname,
@@ -347,6 +372,7 @@ async function showSettings() {
       onDeletePasskey: action((passkey) => withStepUp(() => deletePasskey(passkey))),
       onAddDevice: action(() => withStepUp(addDevice)),
       onReplaceRecoveryKey: action(async () => replaceRecoveryKey()),
+      onTestRecoveryKey: (recoveryKey) => flows.testRecoveryKey(session, recoveryKey),
       onCleanup: action(manualCleanup),
       // The KeePass import is a separate module, loaded only when used (web SPEC §8.5).
       onImport: action(async () => {
@@ -364,6 +390,7 @@ async function showSettings() {
       onError: showError,
     }),
   );
+  if (!keys) showError(new UserFacingError("The vault's keys are missing on the server. Restore the server's data from a backup; this session still works until it's locked."));
 }
 
 function showAddPasskey() {
@@ -420,6 +447,7 @@ function replaceRecoveryKey() {
 }
 
 async function manualCleanup() {
+  if (session.rollback) throw new UserFacingError("Cleanup is paused while the warning about an older vault is shown.");
   const progress = screens.cleanupProgress();
   show(progress.element);
   const { session: next, report } = await flows.maintain(session, "manual", progress.update);
@@ -439,9 +467,8 @@ async function automaticCleanup() {
 
 // ---------------------------------------------------------------- start
 
-api.setUnauthenticatedHandler(() => {
-  if (session) lock();
-});
+// Any request that finds the session gone locks, whatever screen is showing.
+api.setUnauthenticatedHandler(lock);
 lockButton.addEventListener("click", lock);
 settingsButton.addEventListener("click", () => {
   clearBanner();
@@ -449,6 +476,8 @@ settingsButton.addEventListener("click", () => {
 });
 
 async function start() {
+  // From the start, not just once the vault opens: secrets are in memory earlier on some paths.
+  watchInactivity();
   const token = parseSetupFragment(location.hash);
   if (token) {
     history.replaceState(null, "", location.pathname + location.search);

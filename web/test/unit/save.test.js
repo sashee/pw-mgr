@@ -71,3 +71,14 @@ test("it gives up after five conflicts", async () => {
   store.beforePut = () => store.write({ items: ["someone else"] });
   await assert.rejects(saveWithRetry(store.io, options(store, (doc) => doc)), TooManyConflictsError);
 });
+
+import { RollbackError } from "../../public/js/lib/save.js";
+
+test("a conflict pointing at an older document is a rollback, not something to save over", async () => {
+  const store = fakeStore({ items: [], revision: 10 });
+  // The server answers the save with a conflict whose current document is older (revision 3).
+  store.beforePut = () => store.write({ items: ["old"], revision: 3 });
+  const opts = { ...options(store, (doc) => ({ ...doc, items: [...doc.items, "mine"], revision: doc.revision + 1 })), loaded: { doc: { items: [], revision: 10 }, blobId: "b0" } };
+  await assert.rejects(saveWithRetry(store.io, { ...opts, accept: (conflict, base) => conflict.revision > base.revision }), (e) => e instanceof RollbackError && e.conflict.revision === 3 && e.base.revision === 10);
+  assert.deepEqual(store.current().items, ["old"], "nothing was written on top of the old document");
+});

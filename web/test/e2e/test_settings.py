@@ -51,6 +51,8 @@ def run(browser, backend: Backend, port: int) -> None:
 
     # --- password generator: classes and length, KeePassXC-style
     page.click("#new-entry")
+    for field in ["#title", "#username-input", "#urls", "#notes"]:
+        expect(page.locator(field)).to_have_attribute("spellcheck", "false")
     page.fill("#title", "Generated")
     page.click("#generate")
     expect(page.locator("#generator")).to_be_visible()
@@ -173,7 +175,7 @@ def run(browser, backend: Backend, port: int) -> None:
     assert len(passkey_rows(page)) == 1
     lock(phone.page)
     phone.page.click("#unlock")
-    expect(phone.page.locator(".banner")).to_contain_text("Passkey login failed")
+    expect(phone.page.locator(".banner")).to_contain_text("The passkey login failed")
     with db(backend) as conn:
         keys = conn.execute("SELECT cast(b.content AS TEXT) FROM refs r JOIN blobs b ON b.id = r.blob_id WHERE r.name = 'keys'").fetchone()[0]
     assert keys.count('"wrapped_key"') == 2, "one recovery slot and the laptop's passkey slot remain"
@@ -197,7 +199,12 @@ def run(browser, backend: Backend, port: int) -> None:
     other.fill("#recovery-key-input", new_recovery_key)
     other.click("#unlock-recovery")
     other.wait_for_selector("#create-passkey")
-    ok("a replaced recovery key stops working; the new one works")
+    open_settings(page)
+    for key, expected in [(new_recovery_key, "opens your vault"), (recovery_key, "does NOT open"), ("abc", "64 hex characters")]:
+        page.fill("#test-recovery-key", key)
+        page.click("#test-recovery")
+        expect(page.locator("#recovery-test-result")).to_contain_text(expected)
+    ok("a replaced recovery key stops working; the new one works; Settings tests a recovery key")
 
     # --- add a passkey on this device (a new security key; the old one is gone)
     lock(page)
@@ -267,6 +274,20 @@ def run(browser, backend: Backend, port: int) -> None:
     page.click("#save")
     expect(page.locator("li[data-entry='After rollback']")).to_be_visible()
     ok("an older vault from the server shows a warning and pauses saving until acknowledged")
+
+    # --- cleanup never deletes anything when a document is missing on the server
+    with db(backend) as conn:
+        keys_blob = conn.execute("SELECT blob_id FROM refs WHERE name = 'keys'").fetchone()[0]
+        conn.execute("UPDATE blobs SET created_at = created_at - 2 * 24 * 3600 * 1000")
+        conn.execute("DELETE FROM refs WHERE name = 'keys'")
+        before = conn.execute("SELECT count(*) FROM blobs").fetchone()[0]
+    open_settings(page)
+    page.click("#cleanup")
+    expect(page.locator("#cleanup-report")).to_contain_text("missing on the server")
+    with db(backend) as conn:
+        assert conn.execute("SELECT count(*) FROM blobs").fetchone()[0] == before, "nothing deleted"
+        assert conn.execute("SELECT count(*) FROM blobs WHERE id = ?", (keys_blob,)).fetchone()[0] == 1, "the keys blob is still there"
+    ok("cleanup stops without deleting anything when the keys ref is missing")
 
 
 if __name__ == "__main__":

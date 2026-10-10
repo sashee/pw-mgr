@@ -50,6 +50,12 @@ export async function hkdfAesKey(ikm, info) {
   );
 }
 
+/** `length` bytes from HKDF-SHA256 over `ikm` with an empty salt and `info`. */
+export async function hkdfBytes(ikm, info, length) {
+  const base = await subtle.importKey("raw", bytes(ikm), "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: te.encode(info) }, base, length * 8));
+}
+
 /** Encrypts with a fresh random 12-byte nonce. */
 export async function aesGcmEncrypt(key, plaintext, aad) {
   const nonce = randomBytes(12);
