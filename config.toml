@@ -1,0 +1,5 @@
+# Local development settings (backend SPEC §10). Every key can be overridden with BACKEND_<KEY>.
+socket = "./data/backend.sock"
+database = "./data/backend.sqlite3"
+static_dir = "./web/public"
+public_hosts = []

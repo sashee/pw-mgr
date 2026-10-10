@@ -1,6 +1,6 @@
 # Backend Specification: Users & Storage
 
-Status: **Draft v0.4** (2026-10-09)
+Status: **Draft v0.5** (2026-10-10)
 
 ## 1. Purpose & scope
 
@@ -128,7 +128,7 @@ CREATE TABLE setup_tokens (
 CREATE INDEX setup_tokens_by_expiry ON setup_tokens(expires_at);
 
 CREATE TABLE ceremonies (                       -- pending WebAuthn challenges
-  id          BLOB PRIMARY KEY,
+  challenge   BLOB PRIMARY KEY,                 -- 16 bytes; the browser's response carries it
   kind        TEXT NOT NULL CHECK (kind IN ('login', 'register')),
   user_id     BLOB REFERENCES users(id) ON DELETE CASCADE,  -- set for 'register'
   state       BLOB NOT NULL,                    -- webauthn_rp serialized server state
@@ -210,7 +210,7 @@ Every request is checked against its `Host` header before anything else.
   - On success, the server updates the passkey's dynamic state and `last_used_at`.
 - **Verification:** responses are checked against the `finish` request's own origin (port included) and RP ID. A ceremony started on one host or port therefore can't be finished from another.
 - **JSON format:** options and credentials use the WebAuthn Level 3 JSON encoding (base64url). The frontend can therefore use `PublicKeyCredential.parseCreationOptionsFromJSON()`, `parseRequestOptionsFromJSON()` and `credential.toJSON()`.
-- **Ceremonies:** each ceremony can be used once and is deleted before verification, whatever the outcome. A registration ceremony is bound to the user who started it.
+- **Ceremonies:** each ceremony can be used once and is deleted before verification, whatever the outcome. A registration ceremony is bound to the user who started it. Ceremonies are looked up by their challenge, which the browser's response carries, so the client never sends a ceremony ID.
 
 ### 6.3 PRF extension
 
@@ -263,7 +263,7 @@ If the session is too old, the server returns 403 `reauth_required`. The client 
   - Recovery after losing all passkeys.
 - **Links:**
   - A setup link is `<origin>/#setup=<token>`. Putting the token in the URL fragment keeps it out of server and proxy logs.
-  - The fragment is a list of URL-encoded parameters. `setup` belongs to the backend, and the application may add parameters of its own (e.g. a key-transfer secret in step 2).
+  - The fragment is a list of URL-encoded parameters. `setup` belongs to the backend, and the application may add parameters of its own.
   - The server builds full links only for `public_hosts`. For the iroh path, the user appends `/#setup=<token>` to their local address.
 - **Validity:** a token expires 15 minutes after it is created and can be used once (the row is deleted when it is exchanged). A user can have several outstanding tokens.
 - **Use:** exchanging the token gives a normal session. The expected flow is: exchange the token, register a passkey for this host, then use the app.
@@ -352,12 +352,14 @@ All storage belongs to one user. Every store query takes the `user_id` from the 
 
 `POST /auth/login/start`, body `{}`:
 ```json
-{ "ceremony_id": "…", "options": { "publicKey": { "challenge": "…", "rpId": "…", "userVerification": "required" } } }
+{ "options": { "challenge": "…", "rpId": "…", "allowCredentials": [], "userVerification": "required" } }
 ```
+
+`options` is the WebAuthn Level 3 JSON form of the options (the `publicKey` member), ready for `PublicKeyCredential.parseRequestOptionsFromJSON()` / `parseCreationOptionsFromJSON()`.
 
 `POST /auth/login/finish`:
 ```json
-{ "ceremony_id": "…", "credential": { "...": "PublicKeyCredential.toJSON(), without prf results" } }
+{ "credential": { "...": "PublicKeyCredential.toJSON(), without prf results" } }
 ```
 - **200** `{"user": {"id": "…", "username": "alice"}}`, plus `Set-Cookie`.
 - **401** `authentication_failed`. Causes: unknown credential, a passkey registered on another host, a bad signature, or a ceremony that has expired or doesn't exist.
@@ -389,9 +391,9 @@ All storage belongs to one user. Every store query takes the `user_id` from the 
 `current` is true for the passkey that the current session was created with. `last_used_at` can be `null`.
 
 `POST /me/passkeys/register/start`, body `{}`:
-- Returns `{"ceremony_id", "options"}`.
+- Returns `{"options"}`.
 
-`POST /me/passkeys/register/finish`, body `{"ceremony_id", "name", "credential"}`. `name` is 1–64 characters.
+`POST /me/passkeys/register/finish`, body `{"name", "credential"}`. `name` is 1–64 characters.
 - **201** `{"passkey": {...}}`.
 - **400** `registration_failed`.
 - **409** `passkey_exists`.
