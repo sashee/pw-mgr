@@ -7,6 +7,8 @@
 # - e2e-flows, e2e-settings, e2e-import-kdbx: the browser tests. The backend package behind socat (as the
 #   iroh shim reaches it), Chromium with a PRF-capable virtual authenticator. Sandboxed builds, not VMs: none of
 #   them needs the network, and Chromium resolves *.localhost to loopback by itself.
+# - vm: the NixOS module in a VM (./tests/lib.nix), on a minimal machine. A host repository runs the same test
+#   against its own configuration.
 {
   pkgs,
   backend,
@@ -91,4 +93,9 @@ in
   e2e-flows = browserTest "e2e-flows" "test_flows.py";
   e2e-settings = browserTest "e2e-settings" "test_settings.py";
   e2e-import-kdbx = browserTest "e2e-import-kdbx" "test_import_kdbx.py";
+
+  vm = import ./tests/lib.nix {
+    inherit pkgs;
+    machineModules = [ { system.stateVersion = lib.trivial.release; } ];
+  };
 }
