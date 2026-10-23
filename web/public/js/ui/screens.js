@@ -236,7 +236,7 @@ export function editor({ entry, isNew, generatorOptions, onGeneratorOptions, onS
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
 
-export function settings({ host, passkeys, slots, lastCleanup, onAddPasskey, onSetUp, onDeletePasskey, onAddDevice, onReplaceRecoveryKey, onTestRecoveryKey, onCleanup, onImport, onBack, onError }) {
+export function settings({ host, passkeys, slots, lastCleanup, onAddPasskey, onSetUp, onDeletePasskey, onAddDevice, onReplaceRecoveryKey, onTestRecoveryKey, onCleanup, onImport, onExplore, onBack, onError }) {
   const canUnlockCount = passkeys.filter((p) => slots.includes(p.id)).length;
   const passkeyRow = (p) => {
     const canUnlock = slots.includes(p.id);
@@ -288,6 +288,8 @@ export function settings({ host, passkeys, slots, lastCleanup, onAddPasskey, onS
       "Storage",
       h("p", { class: "muted", id: "last-cleanup" }, lastCleanup ? `Last cleanup: ${summary(lastCleanup)}` : "No cleanup has run on this device yet."),
       h("div", { class: "actions" }, actionButton("Clean up now", onCleanup, onError, { id: "cleanup" })),
+      h("p", {}, "See how the vault is stored: its files and directories, read-only."),
+      h("div", { class: "actions" }, actionButton("Explore files", onExplore, onError, { id: "explore-files" })),
     ),
   );
 }

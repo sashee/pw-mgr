@@ -343,3 +343,48 @@ progress {
   padding: var(--gap) 0;
   border-bottom: 1px solid var(--border);
 }
+
+/* The file explorer (SPEC §9.5) */
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: var(--gap);
+}
+
+.breadcrumbs .crumb + .crumb::before {
+  content: "/ ";
+  color: var(--muted);
+}
+
+.explorer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.explorer-list li {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.explorer-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+
+.explorer-fields dd {
+  margin: 0;
+}
+
+.explorer-content {
+  overflow: auto;
+  max-height: 60vh;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+}

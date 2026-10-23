@@ -18,7 +18,7 @@ make package             # result/ = the backend, result-2/ = the frontend's sta
 ```
 
 `nix-build nix -A checks.<name>` runs one check: `web-unit`, `e2e-flows`, `e2e-settings`, `e2e-safety`,
-`e2e-locking`, `e2e-import-kdbx`, `vm`. Building the backend runs e2ee-store's Rust suite; its other checks run in its own repository.
+`e2e-locking`, `e2e-import-kdbx`, `e2e-explorer`, `vm`. Building the backend runs e2ee-store's Rust suite; its other checks run in its own repository.
 
 For development, the Makefile enters the pinned dev shell (`shell.nix`) by itself. Nix builds the backend and
 the SDK into `data/` (`make deps`, which every target below runs), and `web/public/sdk` links to the SDK:

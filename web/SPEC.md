@@ -289,7 +289,7 @@ The import is expected to run once, so it is built to be deleted afterwards.
 | Vault        | Search box, "New entry" button, the entry list, and the selected entry's details (side by side on wide screens, stacked on narrow ones) |
 | Entry editor | Title, username, password (with show/hide and generate), URLs (one per line), notes. Save, Cancel, and Delete (with confirmation). |
 | Import       | Provided by the import module (§8.5): file and key file pickers, password field, KDF progress bar, then the preview with a confirm button |
-| Settings     | Passkeys (name, host, created, last used, "this session", "can unlock", with Add / Set up / Delete), Add device, Recovery key (test the saved key against the vault; create a new one), Import from KeePass, Storage (last cleanup summary and "Clean up now"), Lock |
+| Settings     | Passkeys (name, host, created, last used, "this session", "can unlock", with Add / Set up / Delete), Add device, Recovery key (test the saved key against the vault; create a new one), Import from KeePass, Storage (last cleanup summary, "Clean up now", "Explore files"), Lock |
 
 - **Always visible:** a Lock button and a banner area for warnings (rollback, integrity, read-only).
 - **Layout:** the layout works on phones, because the Android app is one of the main clients.
@@ -361,6 +361,19 @@ the password field.
 - **Remembered settings:** the settings are kept in `localStorage` on this device. They aren't secret.
 - **Not included:** passphrases (word lists) and extended ASCII.
 
+### 9.5 File explorer
+
+"Explore files" in Settings shows the vault's tree as it is stored (§5, SDK SPEC §5): a way to see what is there, not to change it.
+
+- **The root:** its revision and blob ID, and its entries. For this app that's `vault` and the `vault@<revision>` snapshots.
+- **A directory:** its entries sorted by name, each with its size, time and shortened blob ID. Breadcrumbs lead back up.
+- **A file:** all its fields in full (blob ID, salt, SHA-256, size, modified, app data), and its content:
+  - JSON, pretty-printed, with every non-empty `password` replaced by `••••••••`, including in entry histories. "Show secrets" reveals them until the file is left, and "Hide secrets" masks them again.
+  - Other text as it is, and anything else as a hex preview of its first 256 bytes.
+- **Read-only:** nothing can be edited, copied as a whole or written from here.
+- **Text only:** names and content go in as text nodes, never as HTML (§9.2).
+- **Isolation:** like the KeePass import (§8.5), it's a separate module, `js/explorer/`, loaded with a dynamic import when the button is used. It gets `list` and `read` from the app and imports nothing but the UI helpers and the SDK's size formatting, so it can be deleted with its Settings button.
+
 ## 10. Security notes
 
 The SDK's notes apply (SDK SPEC §8): what is and isn't protected, what the server sees, the keys blob, the recovery key and memory. In addition:
@@ -403,6 +416,7 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
     protected custom field, an attachment, history and long notes.
   - All import tests live in their own files (`test/unit/import-kdbx/`, `test/e2e/test_import_kdbx.py`), so they can be deleted together with the module.
   - A test checks that nothing outside `js/import-kdbx/` imports from it. Only the dynamic import in Settings is allowed.
+  - **File explorer:** passwords are masked wherever they are, and only they; JSON, text and binary content; the fields shown. A test checks it is only loaded through the dynamic import in Settings, and writes nothing.
 - **End-to-end tests** with Playwright and Chromium:
   - e2ee-store's harness (SDK SPEC §9): Chromium's virtual authenticator with PRF enabled (CDP `WebAuthn.addVirtualAuthenticator`, `hasPrf: true`).
   - e2ee-store's backend serving the web package, reached through `socat` on `http://localhost` and `http://a.localhost`.
@@ -421,6 +435,7 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
     - auto-lock: inactivity (on a fake clock), an expired session, deleting the session's own passkey
     - "Clean up now" deletes exactly what the tree doesn't reach and shows the report
     - importing a fixture shows the right preview and entries, and a second import adds nothing
+    - the file explorer isn't loaded during normal use; it lists the vault and its snapshot, shows a file's fields and JSON with the passwords masked until revealed, and leads back up and back to Settings
 - **Manual checks:** the Android app over iroh, Firefox, and Safari on the HTTPS path. Also import a real KeePassXC database and time the KDF.
 
 ## 13. Future work

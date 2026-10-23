@@ -416,6 +416,17 @@ async function showSettings() {
           },
         });
       }),
+      // The file explorer is a separate module too, loaded only when used (web SPEC §9.5).
+      onExplore: action(async () => {
+        const { openExplorer } = await import("./explorer/index.js");
+        openExplorer(app, {
+          root: { revision: session.root.revision, blobId: session.root.blobId },
+          list: (path) => flows.list(session, path),
+          read: (entry) => readAll(flows.read(session, entry)),
+          close: () => showSettings().catch(showError),
+          onError: showError,
+        });
+      }),
       onBack: showVault,
       onError: showError,
     }),
