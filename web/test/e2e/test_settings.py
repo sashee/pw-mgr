@@ -16,6 +16,18 @@ from harness import Backend, create_vault, harness, join, lock, new_device, unlo
 REAUTH_WINDOW_S = 5
 SYMBOLS = "!#$%&()*+,-./:;<=>?@[]^_{|}~"
 
+# The root directory as the SDK sees it, unlocked with the recovery key in the page: its blob, and what it lists.
+TREE = """
+async ({ recoveryKey }) => {
+  const { makeFlows } = await import("/sdk/flows.js");
+  const { labels } = await import("/sdk/labels.js");
+  const { hexDecode } = await import("/sdk/crypto.js");
+  const flows = makeFlows({ labels: labels("pw-mgr") });
+  const session = await flows.unlockWithRecoveryKey(await flows.loadKeys(), hexDecode(recoveryKey));
+  return { root: session.root.blobId, entries: (await flows.list(session, [])).map(({ name, id }) => ({ name, id })) };
+}
+"""
+
 
 def ok(text: str) -> None:
     print(f"  ok    {text}", flush=True)
@@ -223,7 +235,7 @@ def run(browser, backend: Backend, port: int) -> None:
     unlock(page)
     ok("a passkey added in settings unlocks the vault")
 
-    # --- cleanup: an orphan blob older than a day goes, the vault and its history stay
+    # --- cleanup: what the tree doesn't reach goes once it's a day old; the root, the vault and its versions stay
     status, orphan = page.evaluate(
         """async () => {
           const data = crypto.getRandomValues(new Uint8Array(100));
@@ -233,35 +245,39 @@ def run(browser, backend: Backend, port: int) -> None:
         }"""
     )
     assert status == 201, status
+    committed = laptop.committed + phone.committed
     with db(backend) as conn:
+        # The first root, kept aside for the rollback test below: cleanup deletes it, as nothing reaches it any more.
+        first_root = conn.execute("SELECT user_id, id, size, content, created_at FROM blobs WHERE lower(hex(id)) = ?", (laptop.committed[0],)).fetchone()
         conn.execute("UPDATE blobs SET created_at = created_at - 2 * 24 * 3600 * 1000")
-        vault_blobs_before = {row[0] for row in conn.execute("SELECT lower(hex(id)) FROM blobs WHERE size > 4000")}
-    committed = set(laptop.committed + phone.committed)
-    assert len(committed) < 20, "all committed versions fit in the kept history"
-    uncommitted = vault_blobs_before - committed
+        before = {row[0] for row in conn.execute("SELECT lower(hex(id)) FROM blobs")}
     open_settings(page)
     page.click("#cleanup")
     page.wait_for_selector("#cleanup-report")
     report = page.inner_text("#cleanup-report")
+    tree = page.evaluate(TREE, {"recoveryKey": new_recovery_key})
     with db(backend) as conn:
         remaining = {row[0] for row in conn.execute("SELECT lower(hex(id)) FROM blobs")}
+        refs = {row[0] for row in conn.execute("SELECT lower(hex(blob_id)) FROM refs")}
+    reached = {entry["id"] for entry in tree["entries"]}
+    names = [entry["name"] for entry in tree["entries"]]
+    assert "vault" in names and any(name.startswith("vault@") for name in names), names
     assert orphan not in remaining, "the orphan is deleted"
-    assert committed <= remaining, f"every committed vault version is kept: missing {committed - remaining}"
-    assert not (uncommitted & remaining), "vault blobs from saves that lost a race are deleted"
+    assert remaining == refs | reached, f"exactly the keys, the root and what it lists remain: {sorted(remaining ^ (refs | reached))}"
+    assert not (set(committed) - {tree["root"]}) & remaining, "earlier roots are deleted"
     deleted = int(re.search(r"(\d+) \(", page.inner_text("#cleanup-deleted")).group(1))
-    assert deleted >= 2 + len(uncommitted), f"the orphan, the replaced keys blobs and {len(uncommitted)} lost saves: {report}"
+    assert deleted == len(before - remaining), report
     page.click("#done")
     expect(page.locator("#last-cleanup")).to_contain_text("(manual)")
     lock(page)
     unlock(page)
     expect(page.locator("li[data-entry='Generated']")).to_be_visible()
-    ok(f"cleanup deleted {deleted} unneeded blobs ({len(uncommitted)} from lost save races) and kept all {len(committed)} vault versions")
+    ok(f"cleanup deleted {deleted} blobs the tree doesn't reach, and kept the vault with {len(names) - 1} earlier versions")
 
-    # --- rollback: the server serves an older vault; saving pauses until acknowledged
+    # --- rollback: the server serves an older root (the first, empty one); saving pauses until acknowledged
     with db(backend) as conn:
-        current = conn.execute("SELECT blob_id FROM refs WHERE name = 'vault'").fetchone()[0]
-        older = conn.execute("SELECT id FROM blobs WHERE size > 4000 AND id != ? ORDER BY created_at LIMIT 1", (current,)).fetchone()[0]
-        conn.execute("UPDATE refs SET blob_id = ? WHERE name = 'vault'", (older,))
+        conn.execute("INSERT OR IGNORE INTO blobs (user_id, id, size, content, created_at) VALUES (?, ?, ?, ?, ?)", first_root)
+        conn.execute("UPDATE refs SET blob_id = ? WHERE name = 'vault'", (first_root[1],))
     lock(page)
     unlock(page)
     expect(page.locator("#rollback-warning")).to_be_visible()

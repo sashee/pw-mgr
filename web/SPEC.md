@@ -32,12 +32,12 @@ Non-goals for v1:
 
 | #   | Topic            | Decision |
 |-----|------------------|----------|
-| P1  | Format           | A custom JSON document, not KDBX. The whole vault is one encrypted blob. |
-| P2  | Keys             | One random master key (MK) per user. The vault blob is encrypted with it. The keys blob is the only plaintext blob: it holds the MK wrapped once per passkey and once for the recovery key. |
-| P3  | Refs             | Two refs: `vault` points to the vault blob and `keys` points to the keys blob. Both are updated with compare-and-swap. |
+| P1  | Format           | A custom JSON document, not KDBX: the file `vault` in the SDK's encrypted tree. |
+| P2  | Keys             | One random master key (MK) per user. Everything in the tree is encrypted with keys derived from it. The keys blob is the only plaintext blob: it holds the MK wrapped once per passkey and once for the recovery key. |
+| P3  | Refs             | Two refs: `vault` points to the tree's root directory and `keys` points to the keys blob. Both are updated with compare-and-swap. |
 | P4  | Recovery key     | 32 random bytes, shown once as 64 hex characters with a copy button. It is used for recovery and for setting up new devices. |
 | P5  | Concurrency      | Every change is one operation applied to the latest document with compare-and-swap. On conflict the operation is re-applied to the new document, so the last save of an entry wins. |
-| P6  | History          | Each entry keeps its own last 10 versions, which can be viewed, copied and restored. The vault document also lists the IDs of the previous 19 vault blobs, a safety net for the whole vault. Maintenance runs on the client, automatically or from a button, and deletes everything that isn't referenced. |
+| P6  | History          | Each entry keeps its own last 10 versions, which can be viewed, copied and restored. The tree also keeps the previous 19 versions of the whole vault, as `vault@<revision>` files: a safety net. Maintenance runs on the client, automatically or from a button, and deletes everything the tree doesn't reach. |
 | P7  | Locking          | Locking logs out and reloads the page. This happens on the Lock button, after 15 minutes of inactivity and when the session expires. |
 | P8  | Tech stack       | Plain JavaScript (ES modules), HTML and CSS. No runtime dependencies and no build step. WebCrypto for cryptography. |
 | P9  | KeePass import   | A read-only KDBX 3.1/4.x reader written for this app. It decrypts the file in the browser; the file is never uploaded. The primitives WebCrypto lacks (Argon2, ChaCha20, Salsa20) are implemented here, so there is still no dependency. It is meant for a one-time migration: a self-contained, lazy-loaded module that can be deleted without touching the rest of the app (§8.5). |
@@ -96,24 +96,29 @@ The SDK's (SDK SPEC §2, §3), with the namespace `pw-mgr`. The labels are there
 | KEKs          | `pw-mgr/kek/passkey/v1`, `pw-mgr/kek/recovery/v1` |
 | Keyslot AADs  | `pw-mgr/keys/v1/passkey`, `pw-mgr/keys/v1/recovery` |
 | Content key   | `pw-mgr/stream/v1` |
-| Vault label   | `pw-mgr/vault/v1` |
+| Directories, files | `pw-mgr/dir/v1`, `pw-mgr/file/v1` |
 | State ID      | `pw-mgr/device-state-id/v1` |
+| Vault before the tree | `pw-mgr/vault/v1`: transitional, for the upgrade (§7.5) |
 
-All but the content key's were the app's own before the SDK existed. Existing vaults are bound to them, so they never change (§12).
+The PRF input, keys format, KEKs, keyslot AADs and state ID were the app's own before the SDK existed. Existing vaults are bound to all of these, so they never change (§12).
 
 ## 5. Storage layout
 
-The SDK's (SDK SPEC §4): the `keys` ref points to the keys blob and the `vault` ref to the current vault blob. The other blobs are older vault versions (listed in the vault's `history`) and replaced keys blobs; maintenance deletes the ones nothing needs.
+The SDK's (SDK SPEC §4, §5): the `keys` ref points to the keys blob, and the `vault` ref to the root directory of the tree. The root holds:
+
+| File | Content |
+|------|---------|
+| `vault` | The vault document (§6). It appears with the first save; until then the vault is empty. |
+| `vault@<revision>` | The vault as it was in that revision of the root, the 19 newest of them (P6). |
+
+Maintenance deletes everything else: earlier roots, older versions and replaced keys blobs.
 
 ## 6. Vault document
 
 ```json
 {
   "format": "pw-mgr/vault",
-  "version": 1,
-  "revision": 42,
-  "saved_at": "2026-10-09T21:00:00.000Z",
-  "history": ["<blob id of revision 41>", "<blob id of revision 40>"],
+  "version": 2,
   "entries": [
     {
       "id": "3f1c2a9e-…",
@@ -132,8 +137,7 @@ The SDK's (SDK SPEC §4): the `keys` ref points to the keys blob and the `vault`
 }
 ```
 
-- **`revision`** starts at 1 and increases by exactly 1 with every save.
-- **`history`** holds the blob IDs of earlier versions, newest first, at most 19 of them. Together with the current version, 20 versions are kept.
+- **Version 2** is this document as the file `vault` in the tree. The revision, the save time and the earlier versions are the tree's now: the root's `revision`, the file's `modified`, and the `vault@<revision>` files.
 - **`id`** is a UUIDv4 from `crypto.randomUUID()`.
 - **`title`** is required, 1–200 characters. All other string fields may be empty, and `notes` can be up to 64 KiB.
 - **Entry `history`** (optional) holds the entry's earlier versions, newest first, at most 10. Each version is a copy of the entry as it was (all fields, including unknown ones and its `updated_at`), without `id` and without its own history.
@@ -141,8 +145,7 @@ The SDK's (SDK SPEC §4): the `keys` ref points to the keys blob and the `vault`
 - **Order:** entries are stored in any order. The UI sorts them by title.
 - **Forward compatibility:**
   - Unknown fields on the document and on entries are preserved when the vault is rewritten.
-  - A document with `version` greater than 1 opens read-only, with a message saying the app needs updating.
-- **As the SDK's vault document** (SDK SPEC §5): `empty` is the vault above with no entries, `read` validates it, `commit` applies an operation as the next `revision` (setting `saved_at` and putting the loaded blob's ID at the front of `history`, cut to 19), `revision` is `revision`, and `keep` is `history`.
+  - A document with `version` greater than 2 opens read-only, with a message saying the app needs updating.
 
 ## 7. Flows
 
@@ -157,15 +160,24 @@ The flows are the SDK's (SDK SPEC §6): unlock, setup links, creating the vault,
 
 Because operations are plain functions, a module can define its own without any change to the core. The KeePass import does this (§8.4).
 
+**A save** (`saveSteps`) is one step of an SDK save (SDK SPEC §6.4):
+
+1. It reads `vault` and applies the operation to it.
+2. If the operation changed nothing, it writes nothing.
+3. Otherwise it keeps the current `vault` as `vault@<revision>` (the revision being replaced), removes the oldest snapshots beyond 19, and uploads the new `vault`.
+
+After a conflict the SDK runs it again on the newer tree, so the operation is applied to the newest vault. A `vault` from a newer version stops the save.
+
 ### 7.2 Concurrent edits
 
 - **Conflicts:** the last save of an entry wins. If the entry being saved changed on another device after editing began (its `updated_at` differs from the version the save was finally applied to), the save still goes through, and a notice says "This entry was also changed on another device; your version was saved". The other version stays in `history`.
+- **Which version a save was applied to:** if the new root's revision is more than one above the loaded one, another device saved in between. The version the operation was applied to is then the snapshot `vault@<new revision − 1>` that the save itself kept, and the notice compares against that.
 - **Failed saves:** when editing an entry, the form stays open.
 - **Network errors:** the UI never updates optimistically. It shows a saving indicator, and on failure it keeps the form open and offers a retry.
 
 ### 7.3 Rollback warning
 
-- When the SDK's check finds a rollback (SDK SPEC §6.5), a warning is shown: "The server returned an older version of your vault", with both revisions.
+- When the SDK's check of the root's revision finds a rollback (SDK SPEC §6.5), a warning is shown: "The server returned an older version of your vault", with both revisions.
 - Saving and cleanup are paused until the user acknowledges the warning, which resets the stored revision.
 
 ### 7.4 Locking
@@ -178,6 +190,19 @@ The client locks on:
 The inactivity timer runs from the moment the page loads, not only once the vault is open: on some paths (recovery key, vault creation) secrets are in memory earlier. The Lock button shows as soon as a secret is in memory.
 
 Locking runs `POST /auth/logout` (ignoring errors) and then `location.reload()`. The reload drops the MK and every decrypted value from memory. Unlocking again is one passkey prompt.
+
+### 7.5 Upgrading to the tree (transitional)
+
+Vaults stored before the SDK's tree (SDK SPEC §6.13) are upgraded when they are opened:
+
+- **When:** right after any unlock that opens one, before the automatic cleanup. Not while a rollback warning is shown (§7.3): the upgrade is a save, and it would make an older vault look new.
+- **What** (`convertLegacy`):
+  - The document becomes the file `vault`, at version 2, without its `revision`, `saved_at` and `history`.
+  - Each version its `history` lists becomes `vault@<its revision>`.
+  - The root's revision is the document's + 1, so devices see no rollback. The entries and their own histories don't change.
+- **Failure:** the vault opens read-only as it is, the error is shown, and the next unlock tries again. After a conflict with another device's save, the next unlock tries again too, without a message.
+- **Afterwards:** the old blobs are no longer referenced, and cleanup deletes them past its grace period.
+- **Removal:** once the vault is upgraded, the upgrade, its test (`test/e2e/test_upgrade.py`) and the fixture of the old layout go, with the SDK's reader of it.
 
 ## 8. KeePass import
 
@@ -374,8 +399,9 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
 
 - **The SDK's own tests** (SDK SPEC §9) run in e2ee-store.
 - **Unit tests** (`node --test`; Node has WebCrypto) for the pure modules, against the web package (so with the SDK it ships):
-  - **Compatibility:** a keys blob written before the SDK existed still unlocks with the passkey's and the recovery key's secrets, and gives the same state ID; the vault as the upgrade to the stream format rewrote it decrypts; and the PRF input is unchanged (§4).
-  - **Vault document:** validation; every operation; re-applying operations on conflict; `history` is cut to 19; unknown fields are preserved; `version > 1` is refused.
+  - **Compatibility:** a keys blob written before the SDK existed still unlocks with the passkey's and the recovery key's secrets, and gives the same state ID; a root directory listing the file `vault` opens with them; the PRF input is unchanged (§4). Transitional: the same vault before the tree still opens.
+  - **Vault document:** validation; every operation; re-applying operations on conflict; unknown fields are preserved; `version > 2` is refused.
+  - **Saving in the tree:** the replaced vault becomes `vault@<revision>`; an empty tree gets its first vault; a save that changes nothing writes nothing; snapshots beyond 19 go, oldest first; a newer vault isn't saved over. Transitional: the conversion of the vault before the tree.
   - **Password generator:** length, sets and guaranteed characters.
   - **KDBX primitives:** checked against vectors generated from independent implementations (Python's
     `hashlib`, `argon2-cffi` and `pycryptodome`), plus RFC 9106's Argon2 vectors. Covers BLAKE2b, Argon2d/i/id,
@@ -403,18 +429,19 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
     - recovery; replacing the recovery key
     - an interrupted vault creation (`keys` without `vault`); `keys` missing while `vault` exists creates nothing
     - a tampered or swapped blob gives an integrity error and nothing is written; rollback warning, also for a vault ref the server lost
-    - a vault or keys document from a newer version opens read-only: no saves, no cleanup
+    - a vault or keys document from a newer version opens read-only, with no saves; newer keys also stop cleanup, while a newer vault doesn't, as cleanup only follows the tree
     - two devices creating the vault at once; a passkey without a slot is set up with the recovery key
     - entry fields with markup are shown as text
     - auto-lock: inactivity (on a fake clock), an expired session, deleting the session's own passkey
-    - "Clean up now" deletes only what it should and shows the report
+    - "Clean up now" deletes exactly what the tree doesn't reach and shows the report
+    - transitional: a vault before the tree, with its history, is upgraded at unlock with the same entries; the next unlock changes nothing, a save keeps the replaced version, and cleanup removes the old blobs (§7.5)
     - importing a fixture shows the right preview and entries, and a second import adds nothing
 - **Manual checks:** the Android app over iroh, Firefox, and Safari on the HTTPS path. Also import a real KeePassXC database and time the KDF.
 
 ## 13. Future work
 
 - Other imports (Bitwarden, CSV) and export.
-- A "recently deleted" view, built on the vault-level history (P6).
+- A "recently deleted" view, built on the `vault@<revision>` snapshots (P6).
 - Master key rotation, e.g. after a passkey or the recovery key is lost to an attacker.
-- Password history per entry, TOTP, attachments (separate encrypted blobs), and folders/tags (which could use the imported KeePass group paths).
+- Password history per entry, TOTP, attachments (files in the tree), and folders/tags (which could use the imported KeePass group paths).
 - An offline read-only cache.

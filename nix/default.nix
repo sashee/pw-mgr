@@ -6,7 +6,7 @@
 #   nix-build nix -A web                   # the frontend's static files, with the SDK inside
 #   nix-build nix -A checks.web-unit       # the frontend's unit tests
 #   nix-build nix -A checks.e2e-flows      # one browser test (also e2e-settings, e2e-safety, e2e-locking,
-#                                          # e2e-import-kdbx)
+#                                          # e2e-import-kdbx, e2e-upgrade)
 #   nix-build nix -A checks.vm             # the NixOS module (./module.nix) in a VM
 #
 # No flake, like the sibling repositories: the packages are callPackage functions and take the caller's

@@ -4,7 +4,7 @@
   a tampered or swapped vault blob is an integrity error: nothing is used, nothing is written
   a vault ref the server lost: the device that saw the vault warns instead of quietly starting over
   `keys` missing while `vault` exists: no new vault, which would make the existing one unreadable
-  a newer vault or keys format opens read-only: no saves, no cleanup
+  a newer vault or keys format opens read-only: no saves; newer keys also stop cleanup
   an interrupted vault creation (`keys` without `vault`) is completed on unlock
   two devices creating the vault at once: one wins, the other's passkey is set up with the recovery key
 
@@ -20,27 +20,29 @@ from playwright.sync_api import expect
 
 from harness import Backend, create_passkey, create_vault, harness, lock, new_device, unlock
 
-# Rewrites a document with another `version`, the way a newer app would, through the real API and the SDK.
-# The vault needs the master key, which the recovery key unwraps.
+# Rewrites a document with another `version`, the way a newer app would, through the real API and the SDK: the keys,
+# or the vault file in the tree, which needs the master key that the recovery key unwraps. Returns the ref's blob before.
 REWRITE = """
 async ({ ref, recoveryKey, version }) => {
   const { labels } = await import("/sdk/labels.js");
-  const { decodeKeys, encodeKeys, unwrap } = await import("/sdk/keys.js");
-  const { contentKey, openDocument, sealDocument } = await import("/sdk/envelope.js");
+  const { decodeKeys, encodeKeys } = await import("/sdk/keys.js");
+  const { makeFlows } = await import("/sdk/flows.js");
   const { hexDecode } = await import("/sdk/crypto.js");
   const api = await import("/sdk/api.js");
   const L = labels("pw-mgr");
-  const keys = decodeKeys(L, await api.getBlob(await api.getRef("keys"))).doc;
   const current = await api.getRef(ref);
-  let bytes;
   if (ref === "keys") {
-    bytes = encodeKeys({ ...keys, version });
+    const id = await api.putBlob(encodeKeys({ ...decodeKeys(L, await api.getBlob(current)).doc, version }));
+    if (!(await api.putRef(ref, id, current)).ok) throw new Error("the ref changed");
   } else {
-    const key = await contentKey(L, await unwrap(L, "recovery", hexDecode(recoveryKey), keys.recovery));
-    bytes = await sealDocument(key, L.vault, { ...(await openDocument(key, L.vault, await api.getBlob(current))), version });
+    const flows = makeFlows({ labels: L });
+    const session = await flows.unlockWithRecoveryKey(await flows.loadKeys(), hexDecode(recoveryKey));
+    const rewrite = async (tx) => {
+      const doc = JSON.parse(new TextDecoder().decode(await tx.read(["vault"])));
+      return tx.put(["vault"], tx.upload(new TextEncoder().encode(JSON.stringify({ ...doc, version }))));
+    };
+    await flows.save(session, [rewrite]);
   }
-  const id = await api.putBlob(bytes);
-  if (!(await api.putRef(ref, id, current)).ok) throw new Error("the ref changed");
   return current;
 }
 """
@@ -182,27 +184,33 @@ def run(browser, backend: Backend, port: int) -> None:
     alice.set_ref("keys", bytes.fromhex(old_keys))
     ok("keys from a newer version open the vault read-only")
 
-    # --- a newer vault format: read-only, and cleanup deletes nothing
+    # --- a newer vault format: read-only; cleanup still runs, as it only follows the tree
     lock(page)
     unlock(page)
     expect(page.locator("#read-only-warning")).to_have_count(0)
-    old_vault = page.evaluate(REWRITE, {"ref": "vault", "recoveryKey": recovery_key, "version": 2})
+    old_vault = page.evaluate(REWRITE, {"ref": "vault", "recoveryKey": recovery_key, "version": 3})
     lock(page)
     unlock(page)
     expect(page.locator("#read-only-warning")).to_be_visible()
     expect(page.locator(f"li[data-entry='{markup}']")).to_be_visible()
+    before = alice.snapshot()
     save_new_entry(page, "In a newer vault")
     expect(page.locator(".banner.error")).to_contain_text("read-only")
     page.click("text=Cancel")
-    alice.age_blobs()
-    before = alice.snapshot()
+    assert alice.snapshot() == before, "nothing was written"
+    current_vault = alice.ref("vault")
     page.click("#settings")
     page.click("#cleanup")
-    expect(page.locator("#cleanup-report")).to_contain_text("newer version")
-    assert alice.snapshot() == before, "cleanup deleted nothing"
+    page.wait_for_selector("#cleanup-report")
+    expect(page.locator("#cleanup-report")).not_to_contain_text("newer version")
     page.click("#done")
+    assert alice.ref("vault") == current_vault, "cleanup left the vault alone"
+    lock(page)
+    unlock(page)
+    expect(page.locator("#read-only-warning")).to_be_visible()
+    expect(page.locator(f"li[data-entry='{markup}']")).to_be_visible()
     alice.set_ref("vault", bytes.fromhex(old_vault))
-    ok("a vault from a newer version opens read-only, and cleanup deletes nothing")
+    ok("a vault from a newer version opens read-only, and cleanup keeps everything it needs")
 
     # --- an interrupted vault creation (`keys` without `vault`) is completed on unlock
     bob_page = new_device(browser, f"http://bob.localhost:{port}").page

@@ -9,7 +9,7 @@ import { WrongKeyError } from "../sdk/keys.js";
 import { isDue } from "../sdk/maintenance.js";
 import { formatRecoveryKey, generateRecoveryKey } from "../sdk/recovery-key.js";
 import { parseSetupFragment } from "../sdk/setup-link.js";
-import { contentOf, deleteEntry, upsertEntry } from "./lib/vault.js";
+import { contentOf, convertLegacy, decodeVault, deleteEntry, newVault, readVault, saveSteps, snapshotName, upsertEntry, VAULT } from "./lib/vault.js";
 import { h, replaceChildren } from "./ui/dom.js";
 import * as screens from "./ui/screens.js";
 
@@ -21,7 +21,10 @@ const warnings = document.getElementById("warnings");
 const lockButton = document.getElementById("lock");
 const settingsButton = document.getElementById("settings");
 
-/** The unlocked session (flows.js), plus `rollback` when the vault looked older than expected. */
+/**
+ * The unlocked session (flows.js), plus `vault`: { doc, writable }, the document in its tree; and `rollback` when the
+ * vault looked older than expected.
+ */
 let session = null;
 
 const show = (screen) => {
@@ -229,6 +232,39 @@ function checkRevision(revision) {
   return rolledBack ? { seen, got: revision } : null;
 }
 
+/** The revision rollback detection compares: the root's, or (transitional) the vault document's before the tree. */
+const revisionOf = (s) => (s.legacy ? s.legacy.doc.revision : s.root.revision);
+
+const readAll = async (opened) => new Uint8Array(await new Response((await opened).stream).arrayBuffer());
+
+/** The document in the file `name` at the root of a session's tree; null if there is none. */
+async function readDocument(s, name) {
+  const entry = (await flows.list(s, [])).find((e) => e.name === name);
+  return entry ? readVault(decodeVault(await readAll(flows.read(s, entry)))) : null;
+}
+
+/** The vault in a session's tree (SPEC §5): a new, empty one until the first save writes the file. */
+async function loadVault(s) {
+  if (s.legacy) return { doc: s.legacy.doc, writable: false };
+  const vault = (await readDocument(s, VAULT[0])) ?? { doc: newVault(), writable: true };
+  return { doc: vault.doc, writable: vault.writable && s.root.writable };
+}
+
+/**
+ * Transitional (SPEC §7.5): a vault from before the tree is rewritten as one, history included. On failure it opens
+ * read-only as it is, and the next unlock tries again.
+ */
+async function upgraded(unlocked) {
+  try {
+    const next = await flows.upgradeVault(unlocked, convertLegacy);
+    if (!next.legacy) checkRevision(next.root.revision);
+    return next;
+  } catch (error) {
+    showError(error);
+    return unlocked;
+  }
+}
+
 function showWarnings() {
   const rollback = session?.rollback;
   // SPEC §6: a newer format opens read-only, and says so up front rather than at the first save.
@@ -248,15 +284,18 @@ function showWarnings() {
 }
 
 function acknowledgeRollback() {
-  remembered.set(revisionKey(), session.vault.doc.revision);
+  remembered.set(revisionKey(), revisionOf(session));
   session = { ...session, rollback: null };
   showWarnings();
 }
 
-function openVault(unlocked) {
+async function openVault(unlocked) {
   const first = session === null;
   session = unlocked;
-  session = { ...session, rollback: checkRevision(session.vault.doc.revision) };
+  // The rollback check comes first: an upgrade on top of an older vault would hide it behind a new revision.
+  const rollback = checkRevision(revisionOf(session));
+  const opened = session.legacy && !rollback ? await upgraded(session) : session;
+  session = { ...opened, vault: await loadVault(opened), rollback };
   showWarnings();
   holdingSecrets();
   settingsButton.hidden = false;
@@ -267,14 +306,20 @@ function openVault(unlocked) {
 /** Saves a vault operation and returns the document it was applied to (to detect concurrent edits). */
 async function save(operation) {
   if (session.rollback) throw new UserFacingError("Saving is paused until you continue past the warning about an older vault.");
+  if (session.legacy) throw new UserFacingError("This vault has to be upgraded before it can be changed. Unlock again to try once more.");
+  if (!session.vault.writable) throw new UserFacingError("This vault was saved by a newer version of the app, so it's read-only here. Update the app to make changes.");
   try {
-    const { session: saved, base } = await flows.saveVault(session, operation);
-    session = { ...saved, rollback: checkRevision(saved.vault.doc.revision) };
+    const { session: saved } = await flows.save(session, saveSteps(operation, Date.now()));
+    // A revision more than one ahead: another device saved in between, and the operation was applied to its version,
+    // which this save kept as a snapshot.
+    const conflicted = saved.root.revision > session.root.revision + 1;
+    const base = (conflicted && (await readDocument(saved, snapshotName(saved.root.revision - 1)))?.doc) || session.vault.doc;
+    session = { ...saved, vault: await loadVault(saved), rollback: checkRevision(saved.root.revision) };
     showWarnings();
     return base;
   } catch (error) {
     if (error instanceof RollbackError) {
-      session = { ...session, rollback: { seen: session.vault.doc.revision, got: error.conflict.revision } };
+      session = { ...session, rollback: { seen: session.root.revision, got: error.conflict.revision } };
       showWarnings();
     }
     throw error;

@@ -1,22 +1,28 @@
-// The vault document (SPEC §6) and its operations (SPEC §7.1). Pure: no clock, no randomness, no I/O.
+// The vault document (SPEC §6), its operations (SPEC §7.1), and how a save writes it into the SDK's tree (SPEC §5).
+// Pure: no clock, no randomness, and no I/O but through the transaction the SDK passes in.
+
+import { UserFacingError } from "../../sdk/passkeys.js";
 
 export const FORMAT = "pw-mgr/vault";
-export const VERSION = 1;
+/** 2: the vault is the file `vault` in the SDK's tree; its revision and history are the tree's (SPEC §5). */
+export const VERSION = 2;
+/** How many earlier versions of the vault are kept, as `vault@<revision>` files. */
 export const HISTORY = 19;
 const TITLE_MAX = 200;
 const NOTES_MAX = 64 * 1024;
 
 const iso = (ms) => new Date(ms).toISOString();
 
-export const newVault = (now) => ({ format: FORMAT, version: VERSION, revision: 1, saved_at: iso(now), history: [], entries: [] });
+export const newVault = () => ({ format: FORMAT, version: VERSION, entries: [] });
 
 /** Returns the document, or throws if it isn't one. `writable` is false for newer versions. */
 export function readVault(doc) {
-  if (doc?.format !== FORMAT || !Number.isInteger(doc.version) || !Number.isInteger(doc.revision) || !Array.isArray(doc.entries)) {
-    throw new Error("Not a vault document");
-  }
-  return { doc: { history: [], ...doc }, writable: doc.version <= VERSION };
+  if (doc?.format !== FORMAT || !Number.isInteger(doc.version) || !Array.isArray(doc.entries)) throw new Error("Not a vault document");
+  return { doc, writable: doc.version <= VERSION };
 }
+
+export const encodeVault = (doc) => new TextEncoder().encode(JSON.stringify(doc));
+export const decodeVault = (bytes) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 
 /** Problems with an entry's fields, as messages; empty when it's valid. */
 export function entryErrors(entry) {
@@ -67,14 +73,6 @@ export const upsertEntry = (entry) => (vault, now) => {
 
 export const deleteEntry = (id) => (vault) => ({ ...vault, entries: vault.entries.filter((e) => e.id !== id) });
 
-/** Applies an operation as a new revision on top of the blob it was loaded from. */
-export const commit = (vault, operation, now, loadedBlobId) => ({
-  ...operation(vault, now),
-  revision: vault.revision + 1,
-  saved_at: iso(now),
-  history: [loadedBlobId, ...(vault.history ?? [])].slice(0, HISTORY),
-});
-
 export const sortEntries = (entries) => [...entries].sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
 
 /** Case-insensitive substring search over title, username, URLs and notes. */
@@ -102,11 +100,54 @@ export function urlHost(text) {
   }
 }
 
-/** The vault document as the SDK's flows see it (e2ee-store/sdk/SPEC.md §5). */
-export const vaultDocument = {
-  empty: newVault,
-  read: readVault,
-  commit,
-  revision: (vault) => vault.revision,
-  keep: (vault) => vault.history ?? [],
+// ---------------------------------------------------------------- in the tree (SPEC §5)
+
+/** The vault's path in the tree; its earlier versions are next to it, as `vault@<revision>`. */
+export const VAULT = ["vault"];
+export const snapshotName = (revision) => `vault@${revision}`;
+const snapshotRevision = (name) => {
+  const match = /^vault@(\d+)$/.exec(name);
+  return match ? Number(match[1]) : null;
 };
+
+/** The snapshots among a directory's entries beyond the newest `keep`, oldest first. */
+export function staleSnapshots(entries, keep = HISTORY) {
+  const snapshots = entries.filter((e) => snapshotRevision(e.name) !== null).sort((a, b) => snapshotRevision(a.name) - snapshotRevision(b.name));
+  return snapshots.slice(0, Math.max(0, snapshots.length - keep));
+}
+
+/**
+ * The steps of a save (SPEC §7.1): the vault the operation makes of the current one becomes `vault`, the current one is
+ * kept as `vault@<revision>`, and snapshots beyond HISTORY go. An operation that changes nothing writes nothing. After a
+ * conflict they run again on the newer tree, so the operation must make sense on any version of the vault.
+ */
+export const saveSteps = (operation, now) => [
+  async (tx) => {
+    const bytes = await tx.read(VAULT);
+    const { doc, writable } = bytes === null ? { doc: newVault(), writable: true } : readVault(decodeVault(bytes));
+    if (!writable) throw new UserFacingError("Another device saved this vault with a newer version of the app; update this one first.");
+    const next = operation(doc, now);
+    if (next === doc) return tx;
+    const current = await tx.entry(VAULT);
+    const kept = current ? tx.put([snapshotName(tx.revision)], current) : tx;
+    const trimmed = staleSnapshots(await kept.list([])).reduce((t, old) => t.remove([old.name]), kept);
+    return trimmed.put(VAULT, trimmed.upload(encodeVault(next), { modified: now }));
+  },
+];
+
+// ---------------------------------------------------------------- transitional: the vault before the tree (SPEC §7.5)
+
+const fromVersion1 = ({ revision: _revision, saved_at: _savedAt, history: _history, ...doc }) => ({ ...doc, version: VERSION });
+
+/**
+ * For the SDK's `upgradeVault`: the vault document of version 1 becomes the file `vault`, and each version its history
+ * lists becomes `vault@<its revision>`. The root continues from the document's revision, so devices see no rollback.
+ */
+export async function convertLegacy(doc, openOld) {
+  const history = await Promise.all((doc.history ?? []).map(openOld));
+  const file = (old) => (tx) => tx.upload(encodeVault(fromVersion1(old)), { modified: old.saved_at });
+  return {
+    revision: doc.revision + 1,
+    steps: [(tx) => tx.put(VAULT, file(doc)(tx)), ...history.map((old) => (tx) => tx.put([snapshotName(old.revision)], file(old)(tx)))],
+  };
+}

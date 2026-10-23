@@ -1,13 +1,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
 
-import { blankEntry, commit, deleteEntry, entryErrors, linkableUrl, newVault, readVault, searchEntries, upsertEntry, urlHost } from "../../public/js/lib/vault.js";
+import { UserFacingError } from "../../public/sdk/passkeys.js";
+import { begin, commit } from "../../public/sdk/tree.js";
+import {
+  blankEntry,
+  convertLegacy,
+  decodeVault,
+  deleteEntry,
+  encodeVault,
+  entryErrors,
+  HISTORY,
+  linkableUrl,
+  newVault,
+  readVault,
+  saveSteps,
+  searchEntries,
+  staleSnapshots,
+  upsertEntry,
+  urlHost,
+} from "../../public/js/lib/vault.js";
 
 const T0 = Date.UTC(2026, 9, 10, 9, 0, 0);
 const entry = (id, title, more = {}) => ({ ...blankEntry(id), title, ...more });
 
 test("upsert adds, then replaces keeping created_at and unknown fields", () => {
-  const v1 = upsertEntry(entry("a", "GitHub", { custom: 1 }))(newVault(T0), T0);
+  const v1 = upsertEntry(entry("a", "GitHub", { custom: 1 }))(newVault(), T0);
   assert.equal(v1.entries.length, 1);
   assert.equal(v1.entries[0].created_at, "2026-10-10T09:00:00.000Z");
   const v2 = upsertEntry({ id: "a", title: "GitHub 2", username: "", password: "", urls: [], notes: "" })(v1, T0 + 1000);
@@ -19,22 +38,13 @@ test("upsert adds, then replaces keeping created_at and unknown fields", () => {
 });
 
 test("delete removes the entry and ignores missing ones", () => {
-  const v = upsertEntry(entry("a", "A"))(newVault(T0), T0);
+  const v = upsertEntry(entry("a", "A"))(newVault(), T0);
   assert.deepEqual(deleteEntry("a")(v).entries, []);
   assert.deepEqual(deleteEntry("zzz")(v).entries, v.entries);
 });
 
-test("commit increments the revision and keeps 19 history entries", () => {
-  let vault = newVault(T0);
-  for (let i = 0; i < 25; i++) vault = commit(vault, (v) => v, T0 + i, `blob-${i}`);
-  assert.equal(vault.revision, 26);
-  assert.equal(vault.history.length, 19);
-  assert.equal(vault.history[0], "blob-24");
-  assert.equal(vault.history[18], "blob-6");
-});
-
 test("re-applying an operation to a newer vault keeps both changes", () => {
-  const base = upsertEntry(entry("a", "A"))(newVault(T0), T0);
+  const base = upsertEntry(entry("a", "A"))(newVault(), T0);
   const theirs = upsertEntry(entry("b", "B"))(base, T0);
   const mine = upsertEntry(entry("c", "C"));
   assert.deepEqual(mine(theirs, T0).entries.map((e) => e.id), ["a", "b", "c"]);
@@ -42,9 +52,9 @@ test("re-applying an operation to a newer vault keeps both changes", () => {
 
 test("vault documents are validated and newer versions are read-only", () => {
   assert.throws(() => readVault({ format: "other" }));
-  assert.equal(readVault(newVault(T0)).writable, true);
-  assert.equal(readVault({ ...newVault(T0), version: 2, extra: true }).writable, false);
-  assert.equal(readVault({ ...newVault(T0), extra: true }).doc.extra, true, "unknown fields survive");
+  assert.equal(readVault(newVault()).writable, true);
+  assert.equal(readVault({ ...newVault(), version: 3, extra: true }).writable, false);
+  assert.equal(readVault({ ...newVault(), extra: true }).doc.extra, true, "unknown fields survive");
 });
 
 test("entries need a title and bounded notes", () => {
@@ -75,7 +85,7 @@ test("only http(s) URLs become links", () => {
 import { changedFields, contentOf, ENTRY_HISTORY } from "../../public/js/lib/vault.js";
 
 test("changing an entry keeps its previous version in the entry's own history", () => {
-  const v1 = upsertEntry(entry("a", "Mail", { password: "one", custom: 7 }))(newVault(T0), T0);
+  const v1 = upsertEntry(entry("a", "Mail", { password: "one", custom: 7 }))(newVault(), T0);
   const v2 = upsertEntry({ ...v1.entries[0], password: "two" })(v1, T0 + 1000);
   const saved = v2.entries[0];
   assert.equal(saved.password, "two");
@@ -88,12 +98,12 @@ test("changing an entry keeps its previous version in the entry's own history", 
 });
 
 test("saving unchanged content changes nothing", () => {
-  const v1 = upsertEntry(entry("a", "Mail", { password: "one" }))(newVault(T0), T0);
+  const v1 = upsertEntry(entry("a", "Mail", { password: "one" }))(newVault(), T0);
   assert.equal(upsertEntry({ ...v1.entries[0] })(v1, T0 + 1000), v1);
 });
 
 test("an entry keeps at most 10 earlier versions, newest first", () => {
-  let vault = upsertEntry(entry("a", "Mail", { password: "p0" }))(newVault(T0), T0);
+  let vault = upsertEntry(entry("a", "Mail", { password: "p0" }))(newVault(), T0);
   for (let i = 1; i <= 15; i++) vault = upsertEntry({ ...vault.entries[0], password: `p${i}` })(vault, T0 + i);
   const history = vault.entries[0].history;
   assert.equal(history.length, ENTRY_HISTORY);
@@ -101,7 +111,7 @@ test("an entry keeps at most 10 earlier versions, newest first", () => {
 });
 
 test("the history comes from the vault the save is applied to, not the editor's copy", () => {
-  const base = upsertEntry(entry("a", "Mail", { password: "one" }))(newVault(T0), T0);
+  const base = upsertEntry(entry("a", "Mail", { password: "one" }))(newVault(), T0);
   const editorCopy = base.entries[0];
   const elsewhere = upsertEntry({ ...editorCopy, password: "two" })(base, T0 + 1);
   const mine = upsertEntry({ ...editorCopy, password: "three" })(elsewhere, T0 + 2);
@@ -109,7 +119,7 @@ test("the history comes from the vault the save is applied to, not the editor's 
 });
 
 test("restoring a version is a change like any other", () => {
-  let vault = upsertEntry(entry("a", "Mail", { password: "old", urls: ["https://a"] }))(newVault(T0), T0);
+  let vault = upsertEntry(entry("a", "Mail", { password: "old", urls: ["https://a"] }))(newVault(), T0);
   vault = upsertEntry({ ...vault.entries[0], password: "overwritten", urls: [] })(vault, T0 + 1);
   const old = vault.entries[0].history[0];
   assert.deepEqual(changedFields(old, vault.entries[0]), ["password", "urls"]);
@@ -118,3 +128,89 @@ test("restoring a version is a change like any other", () => {
   assert.deepEqual(vault.entries[0].urls, ["https://a"]);
   assert.deepEqual(vault.entries[0].history.map((v) => v.password), ["overwritten", "old"]);
 });
+
+// ---------------------------------------------------------------- in the tree (SPEC §5, §7.1)
+
+/** An in-memory store behind the SDK's tree, holding a root with these files: { name: document }. */
+function tree(files, revision = 5) {
+  const blobs = new Map();
+  const known = new Map();
+  const put = (content) => {
+    const id = randomBytes(32).toString("hex");
+    blobs.set(id, content);
+    return { id, salt: randomBytes(16).toString("hex"), size: content.length, sha256: createHash("sha256").update(content).digest("hex") };
+  };
+  const entries = Object.entries(files)
+    .map(([name, doc]) => ({ name, kind: "file", ...put(encodeVault(doc)), modified: new Date(T0).toISOString() }))
+    .sort((a, b) => (a.name < b.name ? -1 : 1));
+  entries.forEach((e) => known.set(e.id, e));
+  const io = {
+    loadDir: async () => assert.fail("pw-mgr's files are at the root"),
+    readFile: async (entry) => blobs.get(entry.id),
+    known: (id) => known.get(id),
+    upload: async (source) => put(source),
+    writeDir: async () => assert.fail("no directories"),
+  };
+  return { io, blobs, tx: begin({ version: 1, revision, entries }, io, T0) };
+}
+
+const run = async (steps, tx) => steps.reduce(async (t, step) => step(await t), Promise.resolve(tx));
+const docAt = (blobs, root, name) => {
+  const entry = root.entries.find((e) => e.name === name);
+  return entry && decodeVault(blobs.get(entry.id));
+};
+
+test("a save writes the vault and keeps the one it replaces as vault@<revision>", async () => {
+  const before = upsertEntry(entry("a", "A"))(newVault(), T0);
+  const { io, blobs, tx } = tree({ vault: before });
+  const root = await commit(await run(saveSteps(upsertEntry(entry("b", "B")), T0 + 1000), tx), io);
+  assert.equal(root.revision, 6);
+  assert.deepEqual(root.entries.map((e) => e.name), ["vault", "vault@5"]);
+  assert.deepEqual(docAt(blobs, root, "vault").entries.map((e) => e.id), ["a", "b"]);
+  assert.deepEqual(docAt(blobs, root, "vault@5"), before);
+  assert.equal(root.entries[0].modified, new Date(T0 + 1000).toISOString());
+});
+
+test("an empty tree gets its first vault; a save that changes nothing writes nothing", async () => {
+  const empty = tree({});
+  const first = await commit(await run(saveSteps(upsertEntry(entry("a", "A")), T0), empty.tx), empty.io);
+  assert.deepEqual(first.entries.map((e) => e.name), ["vault"]);
+
+  const vault = upsertEntry(entry("a", "A"))(newVault(), T0);
+  const { io, tx } = tree({ vault });
+  const unchanged = await commit(await run(saveSteps(upsertEntry(entry("a", "A")), T0 + 1), tx), io);
+  assert.deepEqual(unchanged.entries, (await tx.list([])).map(({ name, ...rest }) => ({ name, ...rest })));
+});
+
+test("snapshots beyond 19 go, oldest first", async () => {
+  const files = Object.fromEntries([["vault", newVault()], ...Array.from({ length: HISTORY }, (_, i) => [`vault@${i + 1}`, newVault()])]);
+  const { io, tx } = tree(files, 20);
+  const root = await commit(await run(saveSteps(upsertEntry(entry("a", "A")), T0), tx), io);
+  const snapshots = root.entries.map((e) => e.name).filter((name) => name.startsWith("vault@"));
+  assert.equal(snapshots.length, HISTORY);
+  assert.ok(!snapshots.includes("vault@1") && snapshots.includes("vault@2") && snapshots.includes("vault@20"));
+  const names = ["vault@10", "notes", "vault@9", "vault@2", "vault@x"].map((name) => ({ name }));
+  assert.deepEqual(staleSnapshots(names, 2).map((e) => e.name), ["vault@2"], "ordered by revision, not by name");
+});
+
+test("a vault from a newer version isn't saved over", async () => {
+  const { tx } = tree({ vault: { ...newVault(), version: 3 } });
+  await assert.rejects(run(saveSteps(upsertEntry(entry("a", "A")), T0), tx), UserFacingError);
+});
+
+test("the vault before the tree becomes `vault`, with its history as snapshots (transitional)", async () => {
+  const old = (revision, ids, history) => ({ format: "pw-mgr/vault", version: 1, revision, saved_at: new Date(T0 + revision).toISOString(), history, entries: ids.map((id) => entry(id, id)), extra: 1 });
+  const stored = { h5: old(5, ["a"], []), h6: old(6, ["a", "b"], ["h5"]) };
+  const current = old(7, ["a", "b", "c"], ["h6", "h5"]);
+  const { revision, steps } = await convertLegacy(current, async (id) => stored[id]);
+  assert.equal(revision, 8);
+  const { io, blobs, tx } = tree({}, revision - 1);
+  const root = await commit(await run(steps, tx), io);
+  assert.deepEqual(root.entries.map((e) => e.name), ["vault", "vault@5", "vault@6"]);
+  const vault = docAt(blobs, root, "vault");
+  assert.deepEqual(Object.keys(vault).sort(), ["entries", "extra", "format", "version"], "revision, saved_at and history are the tree's now");
+  assert.equal(vault.version, 2);
+  assert.deepEqual(docAt(blobs, root, "vault@5").entries.map((e) => e.id), ["a"]);
+  assert.equal(root.entries.find((e) => e.name === "vault@6").modified, new Date(T0 + 6).toISOString());
+});
+
