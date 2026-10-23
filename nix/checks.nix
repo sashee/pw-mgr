@@ -6,13 +6,18 @@
 #   behind socat (as the iroh shim reaches it) serves the web package; Chromium with a PRF-capable virtual
 #   authenticator. Sandboxed builds, not VMs: none of them needs the network, and Chromium resolves *.localhost
 #   to loopback by itself.
-# - vm: the NixOS module in a VM (./tests/lib.nix), on a minimal machine. A host repository runs the same test
-#   against its own configuration.
+# - vm: the NixOS module in a VM (./tests/lib.nix), on `machineModules`.
+# - e2ee-store-sdk-unit, e2ee-store-browser, e2ee-store-vm-s3: e2ee-store's own, the ones it has an app rerun with
+#   the app's nixpkgs (its nix/tests/default.nix), the VM test on `machineModules` as well.
+#
+# `machineModules` are the machine the VM tests boot: a minimal one here, the host's real configuration when a host
+# repository runs these (./tests/default.nix).
 {
   pkgs,
   backend,
   sdk,
   web,
+  machineModules,
 }:
 let
   inherit (pkgs) lib;
@@ -82,8 +87,8 @@ in
   e2e-import-kdbx = browserTest "e2e-import-kdbx" "test_import_kdbx.py";
   e2e-explorer = browserTest "e2e-explorer" "test_explorer.py";
 
-  vm = import ./tests/lib.nix {
-    inherit pkgs;
-    machineModules = [ { system.stateVersion = lib.trivial.release; } ];
-  };
+  vm = import ./tests/lib.nix { inherit pkgs machineModules; };
 }
+// lib.mapAttrs' (name: check: lib.nameValuePair "e2ee-store-${name}" check) (
+  import (import ./e2ee-store.nix + "/nix/tests") { inherit pkgs backend machineModules; }
+)

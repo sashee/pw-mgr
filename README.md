@@ -59,6 +59,10 @@ commands as root through the wrapper, which switches to the service user: `sudo 
 argument, so a host repository runs it against its own configuration. Here, `checks.vm` runs it on a minimal
 machine.
 
+A host repository runs every check, with its own nixpkgs and its machine for the VM tests:
+`import "${pw-mgr}/nix/tests" { inherit pkgs; machineModules = [ <host config> ]; }` gives one derivation per
+check: pw-mgr's (`vm`, `web-unit`, `e2e-*`) and the e2ee-store ones it reruns (`e2ee-store-*`).
+
 ## PoC status
 
 Done:

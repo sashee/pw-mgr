@@ -8,6 +8,8 @@
 #   nix-build nix -A checks.e2e-flows      # one browser test (also e2e-settings, e2e-safety, e2e-locking,
 #                                          # e2e-import-kdbx, e2e-explorer)
 #   nix-build nix -A checks.vm             # the NixOS module (./module.nix) in a VM
+#   nix-build nix -A checks.e2ee-store-sdk-unit   # e2ee-store's checks an app reruns (also e2ee-store-browser,
+#                                                 # e2ee-store-vm-s3)
 #
 # No flake, like the sibling repositories: the packages are callPackage functions and take the caller's
 # nixpkgs, so the one nixpkgs pin lives in ./pkgs.nix. e2ee-store is pinned in ./e2ee-store.nix.
@@ -26,6 +28,7 @@ let
       sdk
       web
       ;
+    machineModules = [ { system.stateVersion = pkgs.lib.trivial.release; } ];
   };
 in
 pkgs.symlinkJoin {
