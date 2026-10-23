@@ -9,7 +9,7 @@ import { WrongKeyError } from "../sdk/keys.js";
 import { isDue } from "../sdk/maintenance.js";
 import { formatRecoveryKey, generateRecoveryKey } from "../sdk/recovery-key.js";
 import { parseSetupFragment } from "../sdk/setup-link.js";
-import { contentOf, deleteEntry, resealHistory, upsertEntry } from "./lib/vault.js";
+import { contentOf, deleteEntry, upsertEntry } from "./lib/vault.js";
 import { h, replaceChildren } from "./ui/dom.js";
 import * as screens from "./ui/screens.js";
 
@@ -253,28 +253,10 @@ function acknowledgeRollback() {
   showWarnings();
 }
 
-/**
- * Transitional (§7.5): a vault from before the stream format is rewritten in it, history included. On failure the
- * vault opens as it is, which works too, and the next unlock tries again.
- */
-async function upgraded(unlocked) {
-  if (!unlocked.vault.legacy) return unlocked;
-  try {
-    const next = await flows.upgradeVault(unlocked, resealHistory);
-    checkRevision(next.vault.doc.revision);
-    return next;
-  } catch (error) {
-    showError(error);
-    return unlocked;
-  }
-}
-
-async function openVault(unlocked) {
+function openVault(unlocked) {
   const first = session === null;
   session = unlocked;
-  // The rollback check comes first: an upgrade on top of an older vault would hide it behind a new revision.
-  const rollback = checkRevision(session.vault.doc.revision);
-  session = { ...(rollback ? session : await upgraded(session)), rollback };
+  session = { ...session, rollback: checkRevision(session.vault.doc.revision) };
   showWarnings();
   holdingSecrets();
   settingsButton.hidden = false;

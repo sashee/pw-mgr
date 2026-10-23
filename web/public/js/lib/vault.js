@@ -102,12 +102,6 @@ export function urlHost(text) {
   }
 }
 
-/**
- * Transitional (§7.5): for the SDK's `upgradeVault`, the vault with the history that its commit keeps rewritten in the
- * stream format. That is all but the oldest version: the commit puts the loaded blob, rewritten too, in front.
- */
-export const resealHistory = async (vault, reseal) => ({ ...vault, history: await Promise.all((vault.history ?? []).slice(0, HISTORY - 1).map((id) => reseal(id))) });
-
 /** The vault document as the SDK's flows see it (e2ee-store/sdk/SPEC.md §5). */
 export const vaultDocument = {
   empty: newVault,

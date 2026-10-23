@@ -98,7 +98,6 @@ The SDK's (SDK SPEC §2, §3), with the namespace `pw-mgr`. The labels are there
 | Content key   | `pw-mgr/stream/v1` |
 | Vault label   | `pw-mgr/vault/v1` |
 | State ID      | `pw-mgr/device-state-id/v1` |
-| Content key before streams | `pw-mgr/content/v1`: transitional, for the upgrade (§7.5) |
 
 All but the content key's were the app's own before the SDK existed. Existing vaults are bound to them, so they never change (§12).
 
@@ -179,16 +178,6 @@ The client locks on:
 The inactivity timer runs from the moment the page loads, not only once the vault is open: on some paths (recovery key, vault creation) secrets are in memory earlier. The Lock button shows as soon as a secret is in memory.
 
 Locking runs `POST /auth/logout` (ignoring errors) and then `location.reload()`. The reload drops the MK and every decrypted value from memory. Unlocking again is one passkey prompt.
-
-### 7.5 Upgrading to the stream format (transitional)
-
-Vaults written before e2ee-store's stream format (SDK SPEC §3.5) are upgraded when they are opened (SDK SPEC §6.13):
-
-- **When:** right after any unlock that opens a vault in the old format (with a passkey, with the recovery key, or on a new device), before the automatic cleanup. Not while a rollback warning is shown (§7.3): the upgrade is a save, and it would make an older vault look new.
-- **What:** the vault and the 18 newest versions in its `history` are rewritten in the stream format. The upgrade's commit puts the rewritten current version in front of them and drops the oldest, as any save does, so nothing in `history` is left in the old format. The entries and their own histories don't change; the revision grows by one.
-- **Failure:** the vault opens as it is, which works (every save writes the new format), the error is shown, and the next unlock tries again. After a conflict with another device's save, the next unlock tries again too, without a message.
-- **Afterwards:** the old blobs are no longer referenced, and cleanup deletes them past its grace period.
-- **Removal:** once the vault is upgraded, the upgrade, its test (`test/e2e/test_upgrade.py`) and the fixture of the old format go, with the SDK's reader of that format.
 
 ## 8. KeePass import
 
@@ -385,8 +374,8 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
 
 - **The SDK's own tests** (SDK SPEC §9) run in e2ee-store.
 - **Unit tests** (`node --test`; Node has WebCrypto) for the pure modules, against the web package (so with the SDK it ships):
-  - **Compatibility:** a keys blob and a vault written before the SDK existed still unlock with the passkey's and the recovery key's secrets, decrypt (in the format before streams), and give the same state ID. The same vault in the stream format opens with the same keys, and the PRF input is unchanged (§4).
-  - **Vault document:** validation; every operation; re-applying operations on conflict; `history` is cut to 19; unknown fields are preserved; `version > 1` is refused; the upgrade rewrites all of the history its commit keeps (§7.5).
+  - **Compatibility:** a keys blob written before the SDK existed still unlocks with the passkey's and the recovery key's secrets, and gives the same state ID; the vault as the upgrade to the stream format rewrote it decrypts; and the PRF input is unchanged (§4).
+  - **Vault document:** validation; every operation; re-applying operations on conflict; `history` is cut to 19; unknown fields are preserved; `version > 1` is refused.
   - **Password generator:** length, sets and guaranteed characters.
   - **KDBX primitives:** checked against vectors generated from independent implementations (Python's
     `hashlib`, `argon2-cffi` and `pycryptodome`), plus RFC 9106's Argon2 vectors. Covers BLAKE2b, Argon2d/i/id,
@@ -420,7 +409,6 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
     - auto-lock: inactivity (on a fake clock), an expired session, deleting the session's own passkey
     - "Clean up now" deletes only what it should and shows the report
     - importing a fixture shows the right preview and entries, and a second import adds nothing
-    - transitional: a vault and its history in the format before streams are upgraded at unlock, with the same entries; the next unlock changes nothing, and cleanup removes the old blobs (§7.5)
 - **Manual checks:** the Android app over iroh, Firefox, and Safari on the HTTPS path. Also import a real KeePassXC database and time the KDF.
 
 ## 13. Future work
