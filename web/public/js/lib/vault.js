@@ -134,20 +134,3 @@ export const saveSteps = (operation, now) => [
     return trimmed.put(VAULT, trimmed.upload(encodeVault(next), { modified: now }));
   },
 ];
-
-// ---------------------------------------------------------------- transitional: the vault before the tree (SPEC §7.5)
-
-const fromVersion1 = ({ revision: _revision, saved_at: _savedAt, history: _history, ...doc }) => ({ ...doc, version: VERSION });
-
-/**
- * For the SDK's `upgradeVault`: the vault document of version 1 becomes the file `vault`, and each version its history
- * lists becomes `vault@<its revision>`. The root continues from the document's revision, so devices see no rollback.
- */
-export async function convertLegacy(doc, openOld) {
-  const history = await Promise.all((doc.history ?? []).map(openOld));
-  const file = (old) => (tx) => tx.upload(encodeVault(fromVersion1(old)), { modified: old.saved_at });
-  return {
-    revision: doc.revision + 1,
-    steps: [(tx) => tx.put(VAULT, file(doc)(tx)), ...history.map((old) => (tx) => tx.put([snapshotName(old.revision)], file(old)(tx)))],
-  };
-}

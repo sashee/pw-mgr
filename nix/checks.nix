@@ -2,7 +2,7 @@
 #
 # - web-unit: the frontend's Node unit tests, including the KeePass import against pykeepass's sample
 #   databases (read from the store), against the web package, so with the SDK it ships.
-# - e2e-flows, e2e-settings, e2e-safety, e2e-locking, e2e-import-kdbx, e2e-upgrade: the browser tests, on e2ee-store's harness. The backend package
+# - e2e-flows, e2e-settings, e2e-safety, e2e-locking, e2e-import-kdbx: the browser tests, on e2ee-store's harness. The backend package
 #   behind socat (as the iroh shim reaches it) serves the web package; Chromium with a PRF-capable virtual
 #   authenticator. Sandboxed builds, not VMs: none of them needs the network, and Chromium resolves *.localhost
 #   to loopback by itself.
@@ -80,8 +80,6 @@ in
   e2e-safety = browserTest "e2e-safety" "test_safety.py";
   e2e-locking = browserTest "e2e-locking" "test_locking.py";
   e2e-import-kdbx = browserTest "e2e-import-kdbx" "test_import_kdbx.py";
-  # Transitional: goes with the upgrade to the SDK's tree (web SPEC §7.5).
-  e2e-upgrade = browserTest "e2e-upgrade" "test_upgrade.py";
 
   vm = import ./tests/lib.nix {
     inherit pkgs;

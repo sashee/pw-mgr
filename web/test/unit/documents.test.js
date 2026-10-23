@@ -6,7 +6,6 @@ import { UserFacingError } from "../../public/sdk/passkeys.js";
 import { begin, commit } from "../../public/sdk/tree.js";
 import {
   blankEntry,
-  convertLegacy,
   decodeVault,
   deleteEntry,
   encodeVault,
@@ -197,20 +196,3 @@ test("a vault from a newer version isn't saved over", async () => {
   const { tx } = tree({ vault: { ...newVault(), version: 3 } });
   await assert.rejects(run(saveSteps(upsertEntry(entry("a", "A")), T0), tx), UserFacingError);
 });
-
-test("the vault before the tree becomes `vault`, with its history as snapshots (transitional)", async () => {
-  const old = (revision, ids, history) => ({ format: "pw-mgr/vault", version: 1, revision, saved_at: new Date(T0 + revision).toISOString(), history, entries: ids.map((id) => entry(id, id)), extra: 1 });
-  const stored = { h5: old(5, ["a"], []), h6: old(6, ["a", "b"], ["h5"]) };
-  const current = old(7, ["a", "b", "c"], ["h6", "h5"]);
-  const { revision, steps } = await convertLegacy(current, async (id) => stored[id]);
-  assert.equal(revision, 8);
-  const { io, blobs, tx } = tree({}, revision - 1);
-  const root = await commit(await run(steps, tx), io);
-  assert.deepEqual(root.entries.map((e) => e.name), ["vault", "vault@5", "vault@6"]);
-  const vault = docAt(blobs, root, "vault");
-  assert.deepEqual(Object.keys(vault).sort(), ["entries", "extra", "format", "version"], "revision, saved_at and history are the tree's now");
-  assert.equal(vault.version, 2);
-  assert.deepEqual(docAt(blobs, root, "vault@5").entries.map((e) => e.id), ["a"]);
-  assert.equal(root.entries.find((e) => e.name === "vault@6").modified, new Date(T0 + 6).toISOString());
-});
-

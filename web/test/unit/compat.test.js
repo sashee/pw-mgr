@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { b64urlDecode, hexEncode, hkdfBytes, sha256Hex, td } from "../../public/sdk/crypto.js";
-import { contentKey, openDocument } from "../../public/sdk/envelope.js";
+import { contentKey } from "../../public/sdk/envelope.js";
 import { decodeKeys, encodeKeys, unwrap } from "../../public/sdk/keys.js";
 import { open } from "../../public/sdk/stream.js";
 import { parseDir } from "../../public/sdk/tree.js";
@@ -15,8 +15,6 @@ import { decodeVault, readVault } from "../../public/js/lib/vault.js";
 // the SDK SPEC with node:crypto alone (salts 0x06… and 0x07…). Existing vaults must keep opening, so the labels can
 // never change.
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/tree.json", import.meta.url)));
-// Transitional (SPEC §7.5): the same vault before the tree, as one document in a blob labelled `vault`.
-const legacy = JSON.parse(readFileSync(new URL("./fixtures/vault.json", import.meta.url)));
 const bytes = (value) => new Uint8Array(32).fill(value);
 
 async function masterKeyOf(keysDoc) {
@@ -41,13 +39,6 @@ test("existing vaults still open", async () => {
   const vault = readVault(decodeVault(plaintext));
   assert.equal(vault.doc.entries[0].password, "hunter2");
   assert.equal(hexEncode(await hkdfBytes(masterKey, LABELS.stateId, 16)), fixture.stateId, "the device state stays where it was");
-});
-
-test("a vault from before the tree still opens for the upgrade (transitional)", async () => {
-  const masterKey = await masterKeyOf(legacy.keys);
-  const vault = await openDocument(await contentKey(LABELS, masterKey), LABELS.vault, b64urlDecode(legacy.vault));
-  assert.equal(vault.entries[0].password, "hunter2");
-  assert.equal(vault.revision, 1);
 });
 
 test("the PRF input is unchanged, so passkeys keep giving the same key", () => {

@@ -98,7 +98,6 @@ The SDK's (SDK SPEC §2, §3), with the namespace `pw-mgr`. The labels are there
 | Content key   | `pw-mgr/stream/v1` |
 | Directories, files | `pw-mgr/dir/v1`, `pw-mgr/file/v1` |
 | State ID      | `pw-mgr/device-state-id/v1` |
-| Vault before the tree | `pw-mgr/vault/v1`: transitional, for the upgrade (§7.5) |
 
 The PRF input, keys format, KEKs, keyslot AADs and state ID were the app's own before the SDK existed. Existing vaults are bound to all of these, so they never change (§12).
 
@@ -190,19 +189,6 @@ The client locks on:
 The inactivity timer runs from the moment the page loads, not only once the vault is open: on some paths (recovery key, vault creation) secrets are in memory earlier. The Lock button shows as soon as a secret is in memory.
 
 Locking runs `POST /auth/logout` (ignoring errors) and then `location.reload()`. The reload drops the MK and every decrypted value from memory. Unlocking again is one passkey prompt.
-
-### 7.5 Upgrading to the tree (transitional)
-
-Vaults stored before the SDK's tree (SDK SPEC §6.13) are upgraded when they are opened:
-
-- **When:** right after any unlock that opens one, before the automatic cleanup. Not while a rollback warning is shown (§7.3): the upgrade is a save, and it would make an older vault look new.
-- **What** (`convertLegacy`):
-  - The document becomes the file `vault`, at version 2, without its `revision`, `saved_at` and `history`.
-  - Each version its `history` lists becomes `vault@<its revision>`.
-  - The root's revision is the document's + 1, so devices see no rollback. The entries and their own histories don't change.
-- **Failure:** the vault opens read-only as it is, the error is shown, and the next unlock tries again. After a conflict with another device's save, the next unlock tries again too, without a message.
-- **Afterwards:** the old blobs are no longer referenced, and cleanup deletes them past its grace period.
-- **Removal:** once the vault is upgraded, the upgrade, its test (`test/e2e/test_upgrade.py`) and the fixture of the old layout go, with the SDK's reader of it.
 
 ## 8. KeePass import
 
@@ -399,9 +385,9 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
 
 - **The SDK's own tests** (SDK SPEC §9) run in e2ee-store.
 - **Unit tests** (`node --test`; Node has WebCrypto) for the pure modules, against the web package (so with the SDK it ships):
-  - **Compatibility:** a keys blob written before the SDK existed still unlocks with the passkey's and the recovery key's secrets, and gives the same state ID; a root directory listing the file `vault` opens with them; the PRF input is unchanged (§4). Transitional: the same vault before the tree still opens.
+  - **Compatibility:** a keys blob written before the SDK existed still unlocks with the passkey's and the recovery key's secrets, and gives the same state ID; a root directory listing the file `vault` opens with them; the PRF input is unchanged (§4).
   - **Vault document:** validation; every operation; re-applying operations on conflict; unknown fields are preserved; `version > 2` is refused.
-  - **Saving in the tree:** the replaced vault becomes `vault@<revision>`; an empty tree gets its first vault; a save that changes nothing writes nothing; snapshots beyond 19 go, oldest first; a newer vault isn't saved over. Transitional: the conversion of the vault before the tree.
+  - **Saving in the tree:** the replaced vault becomes `vault@<revision>`; an empty tree gets its first vault; a save that changes nothing writes nothing; snapshots beyond 19 go, oldest first; a newer vault isn't saved over.
   - **Password generator:** length, sets and guaranteed characters.
   - **KDBX primitives:** checked against vectors generated from independent implementations (Python's
     `hashlib`, `argon2-cffi` and `pycryptodome`), plus RFC 9106's Argon2 vectors. Covers BLAKE2b, Argon2d/i/id,
@@ -434,7 +420,6 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
     - entry fields with markup are shown as text
     - auto-lock: inactivity (on a fake clock), an expired session, deleting the session's own passkey
     - "Clean up now" deletes exactly what the tree doesn't reach and shows the report
-    - transitional: a vault before the tree, with its history, is upgraded at unlock with the same entries; the next unlock changes nothing, a save keeps the replaced version, and cleanup removes the old blobs (§7.5)
     - importing a fixture shows the right preview and entries, and a second import adds nothing
 - **Manual checks:** the Android app over iroh, Firefox, and Safari on the HTTPS path. Also import a real KeePassXC database and time the KDF.
 

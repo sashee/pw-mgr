@@ -9,7 +9,7 @@ import { WrongKeyError } from "../sdk/keys.js";
 import { isDue } from "../sdk/maintenance.js";
 import { formatRecoveryKey, generateRecoveryKey } from "../sdk/recovery-key.js";
 import { parseSetupFragment } from "../sdk/setup-link.js";
-import { contentOf, convertLegacy, decodeVault, deleteEntry, newVault, readVault, saveSteps, snapshotName, upsertEntry, VAULT } from "./lib/vault.js";
+import { contentOf, decodeVault, deleteEntry, newVault, readVault, saveSteps, snapshotName, upsertEntry, VAULT } from "./lib/vault.js";
 import { h, replaceChildren } from "./ui/dom.js";
 import * as screens from "./ui/screens.js";
 
@@ -232,9 +232,6 @@ function checkRevision(revision) {
   return rolledBack ? { seen, got: revision } : null;
 }
 
-/** The revision rollback detection compares: the root's, or (transitional) the vault document's before the tree. */
-const revisionOf = (s) => (s.legacy ? s.legacy.doc.revision : s.root.revision);
-
 const readAll = async (opened) => new Uint8Array(await new Response((await opened).stream).arrayBuffer());
 
 /** The document in the file `name` at the root of a session's tree; null if there is none. */
@@ -245,24 +242,8 @@ async function readDocument(s, name) {
 
 /** The vault in a session's tree (SPEC §5): a new, empty one until the first save writes the file. */
 async function loadVault(s) {
-  if (s.legacy) return { doc: s.legacy.doc, writable: false };
   const vault = (await readDocument(s, VAULT[0])) ?? { doc: newVault(), writable: true };
   return { doc: vault.doc, writable: vault.writable && s.root.writable };
-}
-
-/**
- * Transitional (SPEC §7.5): a vault from before the tree is rewritten as one, history included. On failure it opens
- * read-only as it is, and the next unlock tries again.
- */
-async function upgraded(unlocked) {
-  try {
-    const next = await flows.upgradeVault(unlocked, convertLegacy);
-    if (!next.legacy) checkRevision(next.root.revision);
-    return next;
-  } catch (error) {
-    showError(error);
-    return unlocked;
-  }
 }
 
 function showWarnings() {
@@ -284,7 +265,7 @@ function showWarnings() {
 }
 
 function acknowledgeRollback() {
-  remembered.set(revisionKey(), revisionOf(session));
+  remembered.set(revisionKey(), session.root.revision);
   session = { ...session, rollback: null };
   showWarnings();
 }
@@ -292,10 +273,7 @@ function acknowledgeRollback() {
 async function openVault(unlocked) {
   const first = session === null;
   session = unlocked;
-  // The rollback check comes first: an upgrade on top of an older vault would hide it behind a new revision.
-  const rollback = checkRevision(revisionOf(session));
-  const opened = session.legacy && !rollback ? await upgraded(session) : session;
-  session = { ...opened, vault: await loadVault(opened), rollback };
+  session = { ...session, vault: await loadVault(session), rollback: checkRevision(session.root.revision) };
   showWarnings();
   holdingSecrets();
   settingsButton.hidden = false;
@@ -306,7 +284,6 @@ async function openVault(unlocked) {
 /** Saves a vault operation and returns the document it was applied to (to detect concurrent edits). */
 async function save(operation) {
   if (session.rollback) throw new UserFacingError("Saving is paused until you continue past the warning about an older vault.");
-  if (session.legacy) throw new UserFacingError("This vault has to be upgraded before it can be changed. Unlock again to try once more.");
   if (!session.vault.writable) throw new UserFacingError("This vault was saved by a newer version of the app, so it's read-only here. Update the app to make changes.");
   try {
     const { session: saved } = await flows.save(session, saveSteps(operation, Date.now()));
