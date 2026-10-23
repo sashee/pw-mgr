@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { blankEntry, commit, deleteEntry, entryErrors, linkableUrl, newVault, readVault, searchEntries, upsertEntry, urlHost } from "../../public/js/lib/vault.js";
+import { blankEntry, commit, deleteEntry, entryErrors, HISTORY, linkableUrl, newVault, readVault, resealHistory, searchEntries, upsertEntry, urlHost } from "../../public/js/lib/vault.js";
 
 const T0 = Date.UTC(2026, 9, 10, 9, 0, 0);
 const entry = (id, title, more = {}) => ({ ...blankEntry(id), title, ...more });
@@ -117,4 +117,13 @@ test("restoring a version is a change like any other", () => {
   assert.equal(vault.entries[0].password, "old");
   assert.deepEqual(vault.entries[0].urls, ["https://a"]);
   assert.deepEqual(vault.entries[0].history.map((v) => v.password), ["overwritten", "old"]);
+});
+
+test("the upgrade rewrites the history its commit keeps, so none of the old format is left in it", async () => {
+  const history = Array.from({ length: HISTORY }, (_, i) => `old-${i}`);
+  const resealed = await resealHistory({ ...newVault(T0), history }, async (id) => `new-${id}`);
+  assert.deepEqual(resealed.history, history.slice(0, HISTORY - 1).map((id) => `new-${id}`));
+  assert.deepEqual(commit(resealed, (v) => v, T0, "new-loaded").history, ["new-loaded", ...resealed.history]);
+  const { history: _none, ...withoutHistory } = newVault(T0);
+  assert.deepEqual((await resealHistory(withoutHistory, () => assert.fail("nothing to reseal"))).history, []);
 });
