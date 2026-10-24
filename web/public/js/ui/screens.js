@@ -179,7 +179,7 @@ export function editor({ entry, isNew, generatorOptions, onGeneratorOptions, onS
   // No spellcheck anywhere: with Chrome's enhanced spellcheck, the text would be sent to Google.
   const title = h("input", { id: "title", value: value.title, required: true, maxlength: 200, spellcheck: "false" });
   const username = h("input", { id: "username-input", value: value.username, autocomplete: "off", spellcheck: "false" });
-  const password = h("input", { id: "password-input", type: "password", value: value.password, autocomplete: "new-password" });
+  const password = h("input", { id: "password-input", type: "password", value: value.password, autocomplete: "new-password", spellcheck: "false" });
   const urls = h("textarea", { id: "urls", rows: 2, placeholder: "One URL per line", spellcheck: "false" });
   urls.value = (value.urls ?? []).join("\n");
   const notes = h("textarea", { id: "notes", rows: 6, spellcheck: "false" });

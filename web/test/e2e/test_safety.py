@@ -180,9 +180,15 @@ def run(browser, backend: Backend, port: int) -> None:
     before = alice.snapshot()
     save_new_entry(page, "Under newer keys")
     expect(page.locator(".banner.error")).to_contain_text("read-only")
-    assert alice.snapshot() == before, "nothing was written"
+    page.click("text=Cancel")
+    page.click("#settings")
+    page.click("#cleanup")
+    page.wait_for_selector("#cleanup-report")
+    expect(page.locator("#cleanup-report")).to_contain_text("newer version")
+    page.click("#done")
+    assert alice.snapshot() == before, "nothing was written or deleted"
     alice.set_ref("keys", bytes.fromhex(old_keys))
-    ok("keys from a newer version open the vault read-only")
+    ok("keys from a newer version open the vault read-only, and stop cleanup")
 
     # --- a newer vault format: read-only; cleanup still runs, as it only follows the tree
     lock(page)

@@ -170,7 +170,7 @@ test("a save writes the vault and keeps the one it replaces as vault@<revision>"
   assert.equal(root.entries[0].modified, new Date(T0 + 1000).toISOString());
 });
 
-test("an empty tree gets its first vault; a save that changes nothing writes nothing", async () => {
+test("an empty tree gets its first vault; a save that changes nothing leaves every file as it is", async () => {
   const empty = tree({});
   const first = await commit(await run(saveSteps(upsertEntry(entry("a", "A")), T0), empty.tx), empty.io);
   assert.deepEqual(first.entries.map((e) => e.name), ["vault"]);

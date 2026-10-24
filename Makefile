@@ -2,7 +2,7 @@ SHELL := bash
 
 # Two kinds of targets:
 # - hermetic ones (check, package) go through nix-build (nix/default.nix), in the Nix sandbox;
-# - the development loop (test, e2e, run, …) runs inside the pinned nix shell (shell.nix). --pure keeps host
+# - the development loop (test, e2e, run, …) runs inside the nix shell (shell.nix). --pure keeps host
 #   libraries out of Chromium's way. Already inside `nix-shell`? Then the commands run directly.
 ifdef IN_NIX_SHELL
 RUN := bash -c
@@ -23,8 +23,8 @@ PORT ?= 8080
 
 .PHONY: all check package deps test test-web e2e run iroh user setup-token
 
-# Everything, hermetic: both packages, the frontend's unit tests, the browser tests and the VM test, in the Nix
-# sandbox. This is what CI runs.
+# Everything, hermetic: both packages, the frontend's unit tests, the browser tests, the VM test, and the e2ee-store
+# checks this repository reruns (its SDK's tests and its S3 VM test), in the Nix sandbox. This is what CI runs.
 all: check
 
 check:

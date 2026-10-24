@@ -63,7 +63,7 @@ def run(browser, backend: Backend, port: int) -> None:
 
     # --- password generator: classes and length, KeePassXC-style
     page.click("#new-entry")
-    for field in ["#title", "#username-input", "#urls", "#notes"]:
+    for field in ["#title", "#username-input", "#password-input", "#urls", "#notes"]:
         expect(page.locator(field)).to_have_attribute("spellcheck", "false")
     page.fill("#title", "Generated")
     page.click("#generate")

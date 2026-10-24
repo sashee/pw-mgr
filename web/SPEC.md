@@ -1,6 +1,6 @@
 # Password Manager Specification
 
-Status: **Draft v0.5** (2026-10-10)
+Status: **Draft v0.6** (2026-10-24)
 
 ## 1. Purpose & scope
 
@@ -60,11 +60,15 @@ web/
     sdk/                  development link to e2ee-store's SDK (not in git)
     js/
       main.js             startup, screen state machine
-      flows.js            the SDK's flows, configured with this app's namespace and vault document
+      flows.js            the SDK's flows, configured with this app's namespace
       lib/                pure modules
         vault.js          vault document validation and operations
         password.js       password generator
       ui/                 screens and components
+      explorer/           the read-only file explorer: lazy-loaded, removable (§9.5)
+        index.js          the only entry point
+        screen.js         the screens
+        view.js           what a file shows, passwords masked (pure)
       import-kdbx/        KeePass import: self-contained, lazy-loaded, removable (§8)
         index.js          the only entry point: openImportScreen(container, ctx)
         screen.js         import UI (pickers, progress, preview)
@@ -77,12 +81,15 @@ web/
         chacha20.js       ChaCha20 (KDBX 4 cipher and inner stream)
         salsa20.js        Salsa20 (KDBX 3.1 inner stream)
         entries.js        KeePass XML → vault entries
+        kdf.js            picks the key derivation a file asks for
         kdf-worker.js     runs the key derivation off the main thread
   test/
     unit/                 node --test
-      fixtures/           a vault written before the SDK existed (§12)
+      fixtures/           keys written before the SDK existed, and a vault in its tree (§12)
       import-kdbx/        tests for the import module only
-    e2e/                  Playwright (Python, like monitoring-platform) on e2ee-store's harness: test_flows.py; import tests in their own file
+    e2e/                  Playwright (Python, like monitoring-platform) on e2ee-store's harness: test_flows.py,
+                          test_settings.py, test_safety.py, test_locking.py, test_explorer.py, and the import's
+                          test_import_kdbx.py
 ```
 
 ## 4. Cryptography
@@ -148,7 +155,7 @@ Maintenance deletes everything else: earlier roots, older versions and replaced 
 
 ## 7. Flows
 
-The flows are the SDK's (SDK SPEC §6): unlock, setup links, creating the vault, saving, rollback detection, adding and removing passkeys, adding a device, recovery, replacing the recovery key, and maintenance. Passkeys get the default name "Passkey on `<host>`". This section covers what the password manager adds.
+The flows are the SDK's (SDK SPEC §6): unlock, setup links, creating the vault, saving, rollback detection, adding and removing passkeys, adding a device, recovery, replacing the recovery key, maintenance, and reading the tree. Passkeys get the default name "Passkey on `<host>`". This section covers what the password manager adds.
 
 ### 7.1 Vault operations
 
@@ -162,7 +169,7 @@ Because operations are plain functions, a module can define its own without any 
 **A save** (`saveSteps`) is one step of an SDK save (SDK SPEC §6.4):
 
 1. It reads `vault` and applies the operation to it.
-2. If the operation changed nothing, it writes nothing.
+2. If the operation changed nothing, it leaves every file as it is and keeps no snapshot. The SDK's save still commits a new root, with the next revision.
 3. Otherwise it keeps the current `vault` as `vault@<revision>` (the revision being replaced), removes the oldest snapshots beyond 19, and uploads the new `vault`.
 
 After a conflict the SDK runs it again on the newer tree, so the operation is applied to the newest vault. A `vault` from a newer version stops the save.
@@ -172,7 +179,7 @@ After a conflict the SDK runs it again on the newer tree, so the operation is ap
 - **Conflicts:** the last save of an entry wins. If the entry being saved changed on another device after editing began (its `updated_at` differs from the version the save was finally applied to), the save still goes through, and a notice says "This entry was also changed on another device; your version was saved". The other version stays in `history`.
 - **Which version a save was applied to:** if the new root's revision is more than one above the loaded one, another device saved in between. The version the operation was applied to is then the snapshot `vault@<new revision − 1>` that the save itself kept, and the notice compares against that.
 - **Failed saves:** when editing an entry, the form stays open.
-- **Network errors:** the UI never updates optimistically. It shows a saving indicator, and on failure it keeps the form open and offers a retry.
+- **Network errors:** the UI never updates optimistically. The Save button is disabled while saving; on failure the error shows in the banner, the form stays open, and Save can be pressed again.
 
 ### 7.3 Rollback warning
 
@@ -184,7 +191,7 @@ After a conflict the SDK runs it again on the newer tree, so the operation is ap
 The client locks on:
 - the Lock button
 - 15 minutes without pointer or keyboard input
-- any 401 from the API
+- a 401 `unauthenticated` from the API: the session has ended
 
 The inactivity timer runs from the moment the page loads, not only once the vault is open: on some paths (recovery key, vault creation) secrets are in memory earlier. The Lock button shows as soon as a secret is in memory.
 
@@ -196,7 +203,7 @@ Locking runs `POST /auth/logout` (ignoring errors) and then `location.reload()`.
 
 | Aspect | Supported | Not supported (clear error message) |
 |--------|-----------|-------------------------------------|
-| Format | KDBX 3.1, KDBX 4.0 and 4.1 | KDB (KeePass 1), KDBX before 3.1 |
+| Format | KDBX 3.1, KDBX 4.0 and 4.1 (3.0 is read like 3.1) | KDB (KeePass 1), KDBX 2.x and earlier |
 | Outer cipher | AES-256-CBC, ChaCha20 | Twofish (plugin) |
 | KDF | AES-KDF, Argon2d, Argon2id | others |
 | Compression | none, gzip | – |
@@ -252,11 +259,11 @@ The preview shows:
 - the number of entries to import
 - duplicates that will be skipped, recycle-bin entries skipped, and attachments not imported
 - entries with field references, and entries whose notes were cut
-- a "Skip duplicates" toggle, on by default. An entry counts as a duplicate when an existing entry has the same title, username, password and first URL.
+- a "Skip duplicates" toggle, on by default. An entry counts as a duplicate when an existing entry, or an earlier one in the same file, has the same title, username, password and first URL.
 
 On confirm, the import is saved as one vault operation, `importEntries(entries, skipDuplicates)`, which produces one revision.
 - The operation is defined in `import-kdbx/operation.js` and saved through `ctx.save` (§8.5).
-- It gives the imported entries new IDs. The duplicate check runs against the vault the operation is applied to, so it stays correct when the save is re-applied after a conflict.
+- The imported entries get new IDs when the file is read. The duplicate check runs against the vault the operation is applied to, so it stays correct when the save is re-applied after a conflict.
 - Importing the same file twice with "Skip duplicates" on adds nothing the second time.
 
 ### 8.5 Isolation and removal
@@ -272,8 +279,11 @@ The import is expected to run once, so it is built to be deleted afterwards.
 - **Lazy loading:** the module, including the worker and Argon2, is downloaded only when the import screen opens. Normal use doesn't load it.
 - **Removing it:**
   1. Delete `js/import-kdbx/`, `test/unit/import-kdbx/` and `test/e2e/test_import_kdbx.py`.
-  2. Remove the Settings button and its handler in `main.js`.
-  3. Remove the import's test tools from `shell.nix` (pykeepass, argon2-cffi, pycryptodome, `PYKEEPASS_TESTS`), and the test from the Makefile's `e2e` target.
+  2. Remove the Settings button (the "Import" section and `onImport` in `ui/screens.js`) and its handler in `main.js`.
+  3. Remove the import's test tools and test:
+     - from `shell.nix`: pykeepass, argon2-cffi, pycryptodome, `PYKEEPASS_TESTS`;
+     - from `nix/checks.nix`: the `e2e-import-kdbx` check, `p.pykeepass`, `pykeepassSamples` and `PYKEEPASS_TESTS`;
+     - the test from the Makefile's `e2e` target, and the check's name from `nix/default.nix` and the README.
   4. Delete §8 and the import parts of §9.1, §10 and §12 from this spec.
   
   Existing vaults are unaffected, because imported entries are ordinary entries.
@@ -284,19 +294,19 @@ The import is expected to run once, so it is built to be deleted afterwards.
 
 | Screen       | Contents |
 |--------------|----------|
-| Unlock       | A "Unlock with passkey" button. "Use recovery key" appears only when a session exists. Help text: "Lost your passkeys or using a new device? Get a setup link, then use your recovery key." |
+| Unlock       | A "Unlock with passkey" button. "Use recovery key" appears only when a session exists. A second card, "New here or on a new device?", takes a setup link or token pasted into a field (the Android app has no address bar): "On an existing vault you'll also need your recovery key." |
 | Setup        | Progress through SDK SPEC §6.2 and §6.3: link check, recovery key (shown with a copy button, or entered), passkey registration |
-| Vault        | Search box, "New entry" button, the entry list, and the selected entry's details (side by side on wide screens, stacked on narrow ones) |
-| Entry editor | Title, username, password (with show/hide and generate), URLs (one per line), notes. Save, Cancel, and Delete (with confirmation). |
+| Vault        | Search box, "New entry" button, the entry list, and the selected entry's details with Edit and Delete (with confirmation), side by side on wide screens, stacked on narrow ones |
+| Entry editor | Title, username, password (with show/hide and generate), URLs (one per line), notes. Save and Cancel. |
 | Import       | Provided by the import module (§8.5): file and key file pickers, password field, KDF progress bar, then the preview with a confirm button |
-| Settings     | Passkeys (name, host, created, last used, "this session", "can unlock", with Add / Set up / Delete), Add device, Recovery key (test the saved key against the vault; create a new one), Import from KeePass, Storage (last cleanup summary, "Clean up now", "Explore files"), Lock |
+| Settings     | Passkeys (name, host, created, last used, "this session", "can unlock", with Add / Set up / Delete), Add device, Recovery key (test the saved key against the vault; create a new one), Import from KeePass, Storage (last cleanup summary, "Clean up now", "Explore files"), "Back to the vault" |
 
 - **Always visible:** a Lock button and a banner area for warnings (rollback, integrity, read-only).
 - **Layout:** the layout works on phones, because the Android app is one of the main clients.
 
 ### 9.2 Entries and copy buttons
 
-- **List rows:** each row shows the title, the username and the host of the first URL. Every row has **Copy username** and **Copy password** buttons, so a credential can be used without opening the entry.
+- **List rows:** each row shows the title, the username and the host of the first URL, and **Copy username** and **Copy password** buttons for the fields that are set, so a credential can be used without opening the entry.
 - **Detail view:**
   - The username has a copy button.
   - The password is masked (`••••••••`) and has a show/hide toggle and a copy button.
@@ -396,12 +406,14 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
 
 ## 12. Testing
 
-- **The SDK's own tests** (SDK SPEC §9) run in e2ee-store.
+- **The SDK's own tests** (SDK SPEC §9) run in e2ee-store, and this repository reruns its SDK unit tests, its browser test and its S3 VM test with its own nixpkgs (the `e2ee-store-*` checks).
 - **Unit tests** (`node --test`; Node has WebCrypto) for the pure modules, against the web package (so with the SDK it ships):
   - **Compatibility:** a keys blob written before the SDK existed still unlocks with the passkey's and the recovery key's secrets, and gives the same state ID; a root directory listing the file `vault` opens with them; the PRF input is unchanged (§4).
-  - **Vault document:** validation; every operation; re-applying operations on conflict; unknown fields are preserved; `version > 2` is refused.
-  - **Saving in the tree:** the replaced vault becomes `vault@<revision>`; an empty tree gets its first vault; a save that changes nothing writes nothing; snapshots beyond 19 go, oldest first; a newer vault isn't saved over.
-  - **Password generator:** length, sets and guaranteed characters.
+  - **Vault document:** validation; every operation; re-applying operations on conflict; unknown fields are preserved; a `version > 2` vault opens read-only.
+  - **Entry history:** a change keeps the previous version, at most 10, newest first; unchanged content changes nothing; the history comes from the vault the save is applied to; restoring is a change like any other.
+  - **Search and links:** search covers title, username, URLs and notes; only `http(s)` URLs become links.
+  - **Saving in the tree:** the replaced vault becomes `vault@<revision>`; an empty tree gets its first vault; a save that changes nothing leaves every file as it is; snapshots beyond 19 go, oldest first; a newer vault isn't saved over.
+  - **Password generator:** length, sets, guaranteed characters, excluded characters, clamping, the entropy bands, and unbiased picks (rejection sampling).
   - **KDBX primitives:** checked against vectors generated from independent implementations (Python's
     `hashlib`, `argon2-cffi` and `pycryptodome`), plus RFC 9106's Argon2 vectors. Covers BLAKE2b, Argon2d/i/id,
     ChaCha20 (including RFC 8439's example), Salsa20 and AES-KDF.
@@ -419,22 +431,24 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
   - **File explorer:** passwords are masked wherever they are, and only they; JSON, text and binary content; the fields shown. A test checks it is only loaded through the dynamic import in Settings, and writes nothing.
 - **End-to-end tests** with Playwright and Chromium:
   - e2ee-store's harness (SDK SPEC §9): Chromium's virtual authenticator with PRF enabled (CDP `WebAuthn.addVirtualAuthenticator`, `hasPrf: true`).
-  - e2ee-store's backend serving the web package, reached through `socat` on `http://localhost` and `http://a.localhost`.
+  - e2ee-store's backend serving the web package, reached through `socat` on `http://localhost:PORT` and `*.localhost` hosts (e.g. `phone.localhost`).
   - **Scenarios:**
     - bootstrap from a CLI setup token; unlock; create, edit and delete entries
+    - no PRF output and no plaintext reach the server
     - copy buttons (with clipboard permission granted)
+    - the password generator; an entry's history and restoring a version; the "changed on another device" notice
     - two contexts editing at the same time
     - adding and removing passkeys; step-up
     - adding a device on another host with a setup link plus the recovery key
-    - recovery; replacing the recovery key
+    - recovery; testing the saved recovery key in Settings; replacing the recovery key
     - an interrupted vault creation (`keys` without `vault`); `keys` missing while `vault` exists creates nothing
     - a tampered or swapped blob gives an integrity error and nothing is written; rollback warning, also for a vault ref the server lost
     - a vault or keys document from a newer version opens read-only, with no saves; newer keys also stop cleanup, while a newer vault doesn't, as cleanup only follows the tree
     - two devices creating the vault at once; a passkey without a slot is set up with the recovery key
     - entry fields with markup are shown as text
     - auto-lock: inactivity (on a fake clock), an expired session, deleting the session's own passkey
-    - "Clean up now" deletes exactly what the tree doesn't reach and shows the report
-    - importing a fixture shows the right preview and entries, and a second import adds nothing
+    - "Clean up now" deletes exactly what the tree doesn't reach and shows the report; with the `keys` ref missing, it deletes nothing
+    - the import module's entries match pykeepass's for every sample and a generated database; importing pykeepass's `test4.kdbx` through the UI shows the right preview, and a second import adds nothing
     - the file explorer isn't loaded during normal use; it lists the vault and its snapshot, shows a file's fields and JSON with the passwords masked until revealed, and leads back up and back to Settings
 - **Manual checks:** the Android app over iroh, Firefox, and Safari on the HTTPS path. Also import a real KeePassXC database and time the KDF.
 
@@ -443,5 +457,5 @@ Only through the SDK (SDK SPEC §7). Nothing in the backend or the SDK is specif
 - Other imports (Bitwarden, CSV) and export.
 - A "recently deleted" view, built on the `vault@<revision>` snapshots (P6).
 - Master key rotation, e.g. after a passkey or the recovery key is lost to an attacker.
-- Password history per entry, TOTP, attachments (files in the tree), and folders/tags (which could use the imported KeePass group paths).
+- TOTP, attachments (files in the tree), and folders/tags (which could use the imported KeePass group paths).
 - An offline read-only cache.

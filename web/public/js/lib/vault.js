@@ -118,8 +118,9 @@ export function staleSnapshots(entries, keep = HISTORY) {
 
 /**
  * The steps of a save (SPEC §7.1): the vault the operation makes of the current one becomes `vault`, the current one is
- * kept as `vault@<revision>`, and snapshots beyond HISTORY go. An operation that changes nothing writes nothing. After a
- * conflict they run again on the newer tree, so the operation must make sense on any version of the vault.
+ * kept as `vault@<revision>`, and snapshots beyond HISTORY go. An operation that changes nothing leaves every file as
+ * it is (the SDK's save still commits a new root). After a conflict they run again on the newer tree, so the
+ * operation must make sense on any version of the vault.
  */
 export const saveSteps = (operation, now) => [
   async (tx) => {

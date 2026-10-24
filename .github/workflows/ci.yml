@@ -46,7 +46,7 @@ jobs:
 
       # Both packages and every check, in the Nix sandbox: e2ee-store's Rust suite (in the backend's build), the
       # frontend's unit tests (including the KeePass import against pykeepass's sample databases), the browser
-      # tests (Chromium with a PRF-capable virtual authenticator) and the NixOS module in a VM. The same as
-      # `make check` locally.
+      # tests (Chromium with a PRF-capable virtual authenticator), the NixOS module in a VM, and the e2ee-store
+      # checks this repository reruns. The same as `make check` locally.
       - name: Build and test
         run: make check

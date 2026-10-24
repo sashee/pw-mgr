@@ -10,7 +10,8 @@ A web-based password manager with end-to-end encryption.
 
 ## Development
 
-Everything is built with Nix (nixpkgs pinned in `nix/pkgs.nix`, e2ee-store in `nix/e2ee-store.nix`, no flake):
+Everything is built with Nix, no flake: nixpkgs from `nix/pkgs.nix` (the `nixos-26.05` branch, which hosts follow too;
+they build with their own), and e2ee-store pinned in `nix/e2ee-store.nix`:
 
 ```sh
 make check               # both packages and every check in the Nix sandbox (what CI runs)
@@ -18,9 +19,11 @@ make package             # result/ = the backend, result-2/ = the frontend's sta
 ```
 
 `nix-build nix -A checks.<name>` runs one check: `web-unit`, `e2e-flows`, `e2e-settings`, `e2e-safety`,
-`e2e-locking`, `e2e-import-kdbx`, `e2e-explorer`, `vm`. Building the backend runs e2ee-store's Rust suite; its other checks run in its own repository.
+`e2e-locking`, `e2e-import-kdbx`, `e2e-explorer`, `vm`, and e2ee-store's `e2ee-store-sdk-unit`, `e2ee-store-browser`
+and `e2ee-store-vm-s3`, which this repository reruns with its own nixpkgs. Building the backend runs e2ee-store's Rust
+suite. e2ee-store's lint stays in its own repository, and its instance test is `vm` here, on the `pw-mgr` instance.
 
-For development, the Makefile enters the pinned dev shell (`shell.nix`) by itself. Nix builds the backend and
+For development, the Makefile enters the dev shell (`shell.nix`) by itself. Nix builds the backend and
 the SDK into `data/` (`make deps`, which every target below runs), and `web/public/sdk` links to the SDK:
 
 ```sh
@@ -66,18 +69,22 @@ check: pw-mgr's (`vm`, `web-unit`, `e2e-*`) and the e2ee-store ones it reruns (`
 ## PoC status
 
 Done:
-- the whole backend
+- the whole backend (e2ee-store's)
 - the frontend:
   - setup link, then passkey with PRF, recovery key and vault
-  - entries with copy buttons and a password generator
-  - lock and unlock; a second device joining with the recovery key
+  - entries with search, copy buttons and a password generator
+  - each entry's earlier versions (up to 10), to look at and restore
+  - the vault's earlier versions, kept as `vault@<revision>` files (up to 19)
+  - lock and unlock, also after 15 minutes without input; a second device joining with the recovery key
+  - KeePass import: `.kdbx` 3.1 and 4.x, with a password, a key file or both, decrypted in the browser
   - Settings:
     - passkeys: add, set up, delete
     - add device (setup link)
     - replace the recovery key
     - cleanup with a report, also run automatically once a day
+    - a read-only explorer of the files as they are stored
   - rollback warning
   - "changed on another device" notice
 
-Not yet:
-- KeePass import
+Not yet (`web/SPEC.md` §13): other imports (Bitwarden, CSV) and export, a "recently deleted" view built on the
+vault's earlier versions, master key rotation, TOTP, attachments, folders or tags, and an offline read-only cache.

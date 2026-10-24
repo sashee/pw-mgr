@@ -12,7 +12,8 @@
 #                                                 # e2ee-store-vm-s3)
 #
 # No flake, like the sibling repositories: the packages are callPackage functions and take the caller's
-# nixpkgs, so the one nixpkgs pin lives in ./pkgs.nix. e2ee-store is pinned in ./e2ee-store.nix.
+# nixpkgs, so the one choice of nixpkgs lives in ./pkgs.nix (a branch, not a pin). e2ee-store is pinned in
+# ./e2ee-store.nix.
 {
   pkgs ? import ./pkgs.nix { },
 }:
