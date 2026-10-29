@@ -45,8 +45,8 @@ to paste into the app. The app has no address bar, so paste the setup token on t
 
 ## Deployment
 
-`nix/module.nix` is a plain NixOS module (no flake, like sashee/monitoring-platform): the `pw-mgr` instance of
-e2ee-store's module. The packages are built with the host's own nixpkgs:
+`nix/module.nix` is a plain NixOS module (no flake, like sashee/monitoring-platform), with the backend from the
+e2ee-store version it pins. The packages are built with the host's own nixpkgs:
 
 ```nix
 imports = [ "${pw-mgr}/nix/module.nix" ];
